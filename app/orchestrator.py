@@ -437,11 +437,14 @@ class Orchestrator:
         else:
             self._video_test_detections.clear()
 
-    def compute_3d_from_detections(self) -> list[dict]:
-        """Match detections from two cameras by frame_index and compute 3D positions."""
+    def compute_3d_from_detections(self) -> dict:
+        """Match detections from two cameras by frame_index and compute 3D positions.
+
+        Returns dict with 'points', 'stats' (per-camera detection counts), and 'cam_order'.
+        """
         cam_names = list(self._video_test_detections.keys())
         if len(cam_names) < 2:
-            return []
+            return {"points": [], "stats": {}, "cam_order": cam_names}
 
         cam1_name, cam2_name = cam_names[0], cam_names[1]
         cam1_dets = {d["frame_index"]: d for d in self._video_test_detections[cam1_name]}
@@ -449,11 +452,27 @@ class Orchestrator:
 
         common_frames = sorted(set(cam1_dets.keys()) & set(cam2_dets.keys()))
 
+        stats = {
+            cam1_name: {
+                "total_detections": len(cam1_dets),
+                "frame_range": [min(cam1_dets.keys()), max(cam1_dets.keys())] if cam1_dets else [],
+            },
+            cam2_name: {
+                "total_detections": len(cam2_dets),
+                "frame_range": [min(cam2_dets.keys()), max(cam2_dets.keys())] if cam2_dets else [],
+            },
+            "common_frames": len(common_frames),
+        }
+        logger.info(
+            "3D compute: %s has %d dets, %s has %d dets, %d common frames",
+            cam1_name, len(cam1_dets), cam2_name, len(cam2_dets), len(common_frames),
+        )
+
         cam1_cfg = self.config.cameras.get(cam1_name)
         cam2_cfg = self.config.cameras.get(cam2_name)
         if not cam1_cfg or not cam2_cfg:
             logger.error("Camera config not found for %s or %s", cam1_name, cam2_name)
-            return []
+            return {"points": [], "stats": stats, "cam_order": cam_names}
 
         results = []
         for frame_idx in common_frames:
@@ -473,11 +492,14 @@ class Orchestrator:
                     "z": round(z, 4),
                     "cam1_pixel": [round(d1["pixel_x"], 1), round(d1["pixel_y"], 1)],
                     "cam2_pixel": [round(d2["pixel_x"], 1), round(d2["pixel_y"], 1)],
+                    # Per-camera homography world coords for debugging
+                    "cam1_world": [round(d1["x"], 4), round(d1["y"], 4)],
+                    "cam2_world": [round(d2["x"], 4), round(d2["y"], 4)],
                 })
             except Exception as e:
                 logger.warning("3D computation failed for frame %d: %s", frame_idx, e)
 
-        return results
+        return {"points": results, "stats": stats, "cam_order": cam_names}
 
     def get_video_test_status(self) -> dict:
         """Get video test pipeline status."""

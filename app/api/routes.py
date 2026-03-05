@@ -356,5 +356,11 @@ async def clear_video_test_detections(request: Request):
 async def compute_3d():
     """Compute 3D positions from two cameras' detections via triangulation."""
     orch = _get_orch()
-    results = orch.compute_3d_from_detections()
-    return {"points": results, "count": len(results)}
+    result = orch.compute_3d_from_detections()
+    points = result.get("points", [])
+    return {
+        "points": points,
+        "count": len(points),
+        "stats": result.get("stats", {}),
+        "cam_order": result.get("cam_order", []),
+    }
