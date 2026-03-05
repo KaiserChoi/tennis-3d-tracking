@@ -332,8 +332,29 @@ async def video_test_status():
 
 
 @router.get("/api/video-test/detections")
-async def video_test_detections():
-    """Return all detection results from the current/last video test run."""
+async def video_test_detections(camera: str | None = None):
+    """Return detection results, optionally filtered by camera name."""
     orch = _get_orch()
-    detections = orch.get_video_test_detections()
+    detections = orch.get_video_test_detections(camera)
     return {"detections": detections, "count": len(detections)}
+
+
+@router.post("/api/video-test/clear-detections")
+async def clear_video_test_detections(request: Request):
+    """Clear stored video test detections."""
+    orch = _get_orch()
+    try:
+        body = await request.json()
+        camera = body.get("camera")
+    except Exception:
+        camera = None
+    orch.clear_video_test_detections(camera)
+    return {"status": "ok"}
+
+
+@router.post("/api/video-test/compute-3d")
+async def compute_3d():
+    """Compute 3D positions from two cameras' detections via triangulation."""
+    orch = _get_orch()
+    results = orch.compute_3d_from_detections()
+    return {"points": results, "count": len(results)}

@@ -66,7 +66,7 @@ class Orchestrator:
 
         # Video test
         self._video_test_handle: Optional[_PipelineHandle] = None
-        self._video_test_detections: list[dict] = []
+        self._video_test_detections: dict[str, list[dict]] = {}  # camera_name -> detections
 
     def start_pipeline(self, name: str) -> None:
         if name not in self._handles:
@@ -167,7 +167,8 @@ class Orchestrator:
                             det = handle.result_queue.get_nowait()
                             self._latest_detections[name] = det
                             if name == "_video_test":
-                                self._video_test_detections.append(det)
+                                cam = det.get("camera_name", "unknown")
+                                self._video_test_detections.setdefault(cam, []).append(det)
                             got_any = True
                     except Exception:
                         pass
@@ -342,7 +343,7 @@ class Orchestrator:
         if self._video_test_handle is not None and self._video_test_handle.is_alive():
             self.stop_video_test()
 
-        self._video_test_detections.clear()
+        self._video_test_detections.pop(camera_name, None)
 
         cam_cfg = self.config.cameras.get(camera_name)
         if cam_cfg is None:
@@ -420,9 +421,63 @@ class Orchestrator:
         logger.info("[video-test] Stopped")
         return {"status": "stopped"}
 
-    def get_video_test_detections(self) -> list[dict]:
-        """Return all accumulated video test detections."""
-        return list(self._video_test_detections)
+    def get_video_test_detections(self, camera_name: str | None = None) -> list[dict]:
+        """Return accumulated video test detections, optionally filtered by camera."""
+        if camera_name:
+            return list(self._video_test_detections.get(camera_name, []))
+        all_dets: list[dict] = []
+        for cam_dets in self._video_test_detections.values():
+            all_dets.extend(cam_dets)
+        return sorted(all_dets, key=lambda d: d.get("frame_index", 0))
+
+    def clear_video_test_detections(self, camera_name: str | None = None) -> None:
+        """Clear stored video test detections."""
+        if camera_name:
+            self._video_test_detections.pop(camera_name, None)
+        else:
+            self._video_test_detections.clear()
+
+    def compute_3d_from_detections(self) -> list[dict]:
+        """Match detections from two cameras by frame_index and compute 3D positions."""
+        cam_names = list(self._video_test_detections.keys())
+        if len(cam_names) < 2:
+            return []
+
+        cam1_name, cam2_name = cam_names[0], cam_names[1]
+        cam1_dets = {d["frame_index"]: d for d in self._video_test_detections[cam1_name]}
+        cam2_dets = {d["frame_index"]: d for d in self._video_test_detections[cam2_name]}
+
+        common_frames = sorted(set(cam1_dets.keys()) & set(cam2_dets.keys()))
+
+        cam1_cfg = self.config.cameras.get(cam1_name)
+        cam2_cfg = self.config.cameras.get(cam2_name)
+        if not cam1_cfg or not cam2_cfg:
+            logger.error("Camera config not found for %s or %s", cam1_name, cam2_name)
+            return []
+
+        results = []
+        for frame_idx in common_frames:
+            d1 = cam1_dets[frame_idx]
+            d2 = cam2_dets[frame_idx]
+            try:
+                x, y, z = triangulate(
+                    (d1["x"], d1["y"]),
+                    (d2["x"], d2["y"]),
+                    cam1_cfg.position_3d,
+                    cam2_cfg.position_3d,
+                )
+                results.append({
+                    "frame_index": frame_idx,
+                    "x": round(x, 4),
+                    "y": round(y, 4),
+                    "z": round(z, 4),
+                    "cam1_pixel": [round(d1["pixel_x"], 1), round(d1["pixel_y"], 1)],
+                    "cam2_pixel": [round(d2["pixel_x"], 1), round(d2["pixel_y"], 1)],
+                })
+            except Exception as e:
+                logger.warning("3D computation failed for frame %d: %s", frame_idx, e)
+
+        return results
 
     def get_video_test_status(self) -> dict:
         """Get video test pipeline status."""
