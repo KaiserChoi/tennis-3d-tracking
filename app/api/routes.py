@@ -240,6 +240,37 @@ async def delete_uploaded_video(filename: str):
     return {"status": "ok"}
 
 
+# ---- Video Frame Preview (codec-agnostic) ----
+
+@router.get("/api/video-preview/frame")
+async def video_preview_frame(filename: str, time: float = 0):
+    """Return a JPEG frame at the given timestamp using OpenCV (supports H.265)."""
+    fpath = _UPLOAD_DIR / filename
+    if not fpath.exists():
+        raise HTTPException(404, f"File not found: {filename}")
+    if not fpath.resolve().parent == _UPLOAD_DIR.resolve():
+        raise HTTPException(400, "Invalid filename")
+
+    cap = cv2.VideoCapture(str(fpath))
+    if not cap.isOpened():
+        raise HTTPException(500, "Cannot open video file")
+
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30
+    cap.set(cv2.CAP_PROP_POS_FRAMES, int(time * fps))
+    ret, frame = cap.read()
+    cap.release()
+
+    if not ret or frame is None:
+        raise HTTPException(400, "Cannot read frame at given time")
+
+    _, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+    return StreamingResponse(
+        iter([buf.tobytes()]),
+        media_type="image/jpeg",
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
 # ---- Video Test ----
 
 @router.post("/api/video-test/run")

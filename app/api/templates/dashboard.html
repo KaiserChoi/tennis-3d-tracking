@@ -434,7 +434,7 @@ body{font-family:'Lato',sans-serif;background:var(--bg);color:var(--text);height
         <!-- Right top: Video player -->
         <div class="video-panel vt-panel">
           <div class="vt-player-area" id="vt-player-area">
-            <video id="vt-video" style="display:none" controls></video>
+            <img id="vt-video" style="display:none" alt="Video preview">
             <img id="vt-stream" style="display:none" alt="Processing stream">
             <div class="vid-empty" id="vt-placeholder">Upload and select a video</div>
             <div class="video-bar" id="vt-video-bar" style="display:none">
@@ -875,8 +875,8 @@ function vtSelectVideo(filename){
   bar.style.display='flex';
   rangeSection.style.display='block';
 
-  video.src='/uploads/'+filename;
-  video.load();
+  // Use server-side frame rendering (supports H.265 and all codecs)
+  video.src='/api/video-preview/frame?filename='+encodeURIComponent(filename)+'&time=0';
 
   document.getElementById('vt-video-name').textContent=filename;
 
@@ -884,15 +884,12 @@ function vtSelectVideo(filename){
   if(info){
     document.getElementById('vt-resolution').textContent=
       (info.width?info.width+'x'+info.height:'')+(info.fps?' @ '+info.fps+'fps':'');
-  }
-
-  video.onloadedmetadata=()=>{
-    _vtDuration=video.duration;
+    _vtDuration=info.duration||0;
     _vtClipStart=0;
     _vtClipEnd=1;
     vtUpdateSlider();
     document.getElementById('vt-run-btn').disabled=false;
-  };
+  }
 }
 
 async function vtDeleteVideo(filename){
@@ -936,10 +933,11 @@ function vtOnDrag(clientX){
     _vtClipEnd=Math.max(pct,_vtClipStart+0.005);
   }
   vtUpdateSlider();
-  // Seek video to preview the position
-  const video=document.getElementById('vt-video');
-  if(video.src){
-    video.currentTime=(_vtDragging==='start'?_vtClipStart:_vtClipEnd)*_vtDuration;
+  // Fetch frame from server at the dragged position
+  if(_vtSelected){
+    const t=(_vtDragging==='start'?_vtClipStart:_vtClipEnd)*_vtDuration;
+    const video=document.getElementById('vt-video');
+    video.src='/api/video-preview/frame?filename='+encodeURIComponent(_vtSelected)+'&time='+t;
   }
 }
 
@@ -1004,7 +1002,6 @@ function vtStartUI(){
   // Switch to MJPEG stream view
   const video=document.getElementById('vt-video');
   const stream=document.getElementById('vt-stream');
-  video.pause();
   video.style.display='none';
   stream.src='/api/camera/_video_test/stream';
   stream.style.display='block';
