@@ -5,7 +5,8 @@ import json
 import logging
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Request
+import cv2
+from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, StreamingResponse
 
 from app.orchestrator import Orchestrator
@@ -16,6 +17,8 @@ router = APIRouter()
 
 # The orchestrator instance is injected via app.state at startup.
 _orch: Orchestrator | None = None
+_UPLOAD_DIR = Path("uploads")
+_VIDEO_EXTS = {".mp4", ".avi", ".mkv", ".mov", ".wmv", ".flv", ".webm"}
 
 
 def set_orchestrator(orch: Orchestrator) -> None:
@@ -171,3 +174,113 @@ async def camera_mjpeg_stream(name: str):
         frame_generator(),
         media_type="multipart/x-mixed-replace; boundary=frame",
     )
+
+
+# ---- Video Upload / Management ----
+
+@router.post("/api/upload-video")
+async def upload_video(files: list[UploadFile] = File(...)):
+    """Upload one or more video files."""
+    _UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    saved = []
+    for f in files:
+        if not f.filename:
+            continue
+        safe_name = f.filename.replace(" ", "_")
+        dest = _UPLOAD_DIR / safe_name
+        # Handle duplicate names
+        if dest.exists():
+            stem, suffix = dest.stem, dest.suffix
+            i = 1
+            while dest.exists():
+                dest = _UPLOAD_DIR / f"{stem}_{i}{suffix}"
+                i += 1
+        content = await f.read()
+        dest.write_bytes(content)
+        saved.append(dest.name)
+    return {"status": "ok", "files": saved}
+
+
+@router.get("/api/uploaded-videos")
+async def list_uploaded_videos():
+    """List all uploaded videos with metadata."""
+    _UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    videos = []
+    for f in sorted(_UPLOAD_DIR.iterdir()):
+        if not f.is_file() or f.suffix.lower() not in _VIDEO_EXTS:
+            continue
+        info: dict = {"filename": f.name, "size_mb": round(f.stat().st_size / 1024 / 1024, 1)}
+        try:
+            cap = cv2.VideoCapture(str(f))
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            frames = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+            w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            cap.release()
+            if fps > 0:
+                info["duration"] = round(frames / fps, 2)
+                info["fps"] = round(fps, 1)
+            info["width"] = w
+            info["height"] = h
+        except Exception:
+            pass
+        videos.append(info)
+    return {"videos": videos}
+
+
+@router.delete("/api/uploaded-video/{filename}")
+async def delete_uploaded_video(filename: str):
+    """Delete an uploaded video file."""
+    fpath = _UPLOAD_DIR / filename
+    if not fpath.exists():
+        raise HTTPException(404, f"File not found: {filename}")
+    if not fpath.resolve().parent == _UPLOAD_DIR.resolve():
+        raise HTTPException(400, "Invalid filename")
+    fpath.unlink()
+    return {"status": "ok"}
+
+
+# ---- Video Test ----
+
+@router.post("/api/video-test/run")
+async def run_video_test(request: Request):
+    """Start processing a video segment through the detection pipeline."""
+    orch = _get_orch()
+    body = await request.json()
+    filename = body.get("filename")
+    start_time = float(body.get("start_time", 0))
+    end_time = float(body.get("end_time", 0))
+    camera = body.get("camera", "cam66")
+
+    if not filename:
+        raise HTTPException(400, "filename is required")
+    video_path = _UPLOAD_DIR / filename
+    if not video_path.exists():
+        raise HTTPException(404, f"Video not found: {filename}")
+
+    try:
+        result = orch.start_video_test(
+            video_path=str(video_path),
+            start_time=start_time,
+            end_time=end_time,
+            camera_name=camera,
+        )
+        return result
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@router.post("/api/video-test/stop")
+async def stop_video_test():
+    """Stop video test pipeline."""
+    orch = _get_orch()
+    return orch.stop_video_test()
+
+
+@router.get("/api/video-test/status")
+async def video_test_status():
+    """Get video test pipeline status."""
+    orch = _get_orch()
+    return orch.get_video_test_status()

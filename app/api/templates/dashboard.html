@@ -41,6 +41,10 @@ body{font-family:'Lato',sans-serif;background:var(--bg);color:var(--text);height
 .main-header h1{font-size:24px;font-weight:600}
 .layout{display:grid;grid-template-columns:320px 1fr;grid-template-rows:1fr 190px;gap:16px;flex:1;min-height:0}
 
+/* ---- Page content ---- */
+.page-content{display:none;flex-direction:column;flex:1;min-height:0}
+.page-content.active{display:flex}
+
 /* ---- Left panel ---- */
 .left-panel{grid-row:1/3;display:flex;flex-direction:column;gap:16px;overflow-y:auto;padding-right:8px}
 .section-title{font-size:13px;font-weight:600;margin-bottom:8px}
@@ -104,6 +108,7 @@ body{font-family:'Lato',sans-serif;background:var(--bg);color:var(--text);height
 .state-badge.stopped{background:rgba(100,116,139,.2);color:#94a3b8}
 .state-badge.error{background:rgba(239,68,68,.2);color:#ef4444}
 .state-badge.starting{background:rgba(234,179,8,.2);color:#eab308}
+.state-badge.completed{background:rgba(95,177,223,.2);color:var(--accent)}
 
 /* ---- Video grid ---- */
 #video-container{width:100%;height:100%;display:grid;gap:2px;background:#000;overflow:hidden}
@@ -134,6 +139,64 @@ body{font-family:'Lato',sans-serif;background:var(--bg);color:var(--text);height
 .rec-dot{width:7px;height:7px;border-radius:50%;background:currentColor;flex-shrink:0}
 .rec-btn.recording .rec-dot{animation:blink 1s infinite}
 @keyframes blink{0%,100%{opacity:1}50%{opacity:.2}}
+
+/* ---- Video Test Page ---- */
+.upload-area{border:2px dashed rgba(255,255,255,.15);border-radius:8px;padding:24px 16px;text-align:center;cursor:pointer;transition:all .2s;background:rgba(255,255,255,.02)}
+.upload-area:hover,.upload-area.dragover{border-color:var(--accent);background:rgba(95,177,223,.05)}
+.upload-area .upload-icon{width:28px;height:28px;fill:var(--text-muted);display:block;margin:0 auto 6px}
+.upload-area .upload-text{display:block;font-size:11px;color:var(--text-muted)}
+.upload-area .upload-hint{display:block;font-size:9px;color:var(--text-muted);opacity:.6;margin-top:2px}
+.upload-area input[type="file"]{display:none}
+.upload-area.uploading{pointer-events:none;opacity:.6}
+
+.video-item{background:var(--card-bg);padding:8px 14px;display:flex;align-items:center;gap:10px;cursor:pointer;transition:background .15s;position:relative}
+.video-item:hover{background:#3a3a3a}
+.video-item.selected{background:#383838}
+.video-item.selected::before{content:'';position:absolute;left:0;top:50%;transform:translateY(-50%);width:3px;height:20px;border-radius:0 8px 8px 0;background:var(--accent)}
+.video-item .vi-icon{flex-shrink:0;width:16px;height:16px;fill:var(--text-muted)}
+.video-item .vi-info{flex:1;min-width:0}
+.video-item .vi-name{font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block}
+.video-item .vi-meta{font-size:9px;color:var(--text-muted);margin-top:2px}
+.video-item .vi-delete{width:20px;height:20px;display:flex;align-items:center;justify-content:center;cursor:pointer;opacity:.3;transition:opacity .15s;flex-shrink:0}
+.video-item .vi-delete:hover{opacity:1}
+.video-item .vi-delete svg{width:12px;height:12px;fill:var(--cam-red)}
+
+.cam-select{background:var(--card-bg);color:var(--text);border:1px solid rgba(255,255,255,.15);border-radius:4px;padding:4px 8px;font-size:11px;font-family:'Lato',sans-serif;cursor:pointer;outline:none}
+.cam-select:focus{border-color:var(--accent)}
+.cam-select option{background:var(--card-bg);color:var(--text)}
+
+.run-btn{display:flex;align-items:center;justify-content:center;gap:6px;width:100%;padding:10px;border:none;border-radius:6px;background:var(--accent);color:#fff;font-size:12px;font-weight:600;cursor:pointer;transition:all .2s;font-family:'Lato',sans-serif}
+.run-btn:hover{filter:brightness(1.15)}
+.run-btn:disabled{opacity:.4;cursor:not-allowed;filter:none}
+.run-btn.stop{background:var(--cam-red)}
+.run-btn svg{width:14px;height:14px;fill:currentColor}
+
+.vt-panel{display:flex!important;flex-direction:column}
+.vt-player-area{flex:1;min-height:0;position:relative;background:#000;overflow:hidden}
+.vt-player-area video{width:100%;height:100%;object-fit:contain;display:block;background:#000}
+.vt-player-area img{width:100%;height:100%;object-fit:contain;display:block;background:#000}
+
+.range-slider-section{padding:10px 16px 12px;background:#1a1a1a;border-top:1px solid rgba(255,255,255,.06)}
+.range-slider{position:relative;height:28px;user-select:none}
+.range-track{position:absolute;top:10px;left:0;right:0;height:8px;background:rgba(255,255,255,.1);border-radius:4px;cursor:pointer}
+.range-selected{position:absolute;top:10px;height:8px;background:var(--accent);border-radius:4px;opacity:.5;pointer-events:none}
+.range-handle{position:absolute;top:4px;width:20px;height:20px;background:var(--accent);border-radius:50%;cursor:grab;z-index:2;transform:translateX(-50%);border:2px solid #fff;transition:box-shadow .15s}
+.range-handle:hover{box-shadow:0 0 0 4px rgba(95,177,223,.3)}
+.range-handle:active{cursor:grabbing}
+.range-times{display:flex;gap:16px;margin-top:6px;flex-wrap:wrap}
+.range-time-item{font-size:10px;color:var(--text-muted)}
+.range-time-item span{color:var(--accent);font-weight:600;font-family:monospace}
+
+.progress-section{background:var(--card-bg);padding:10px 14px;border-radius:4px}
+.progress-bar-track{height:4px;background:rgba(255,255,255,.1);border-radius:2px;overflow:hidden;margin-top:8px}
+.progress-bar-fill{height:100%;background:var(--cam-green);border-radius:2px;transition:width .3s;width:0%}
+.progress-text{font-size:9px;color:var(--text-muted);margin-top:4px;display:flex;justify-content:space-between}
+
+.btn-sm{padding:4px 14px;border:none;border-radius:4px;font-size:10px;font-weight:600;cursor:pointer;transition:all .15s}
+.btn-start-sm{background:var(--cam-green);color:#fff}
+.btn-start-sm:hover{background:#1fa85a}
+.btn-stop-sm{background:var(--cam-red);color:#fff}
+.btn-stop-sm:hover{background:#d43d3d}
 </style>
 </head>
 <body>
@@ -145,9 +208,13 @@ body{font-family:'Lato',sans-serif;background:var(--bg);color:var(--text);height
       <span>Tennis</span>
     </div>
     <div class="nav">
-      <div class="nav-item active" data-page="dashboard">
+      <div class="nav-item active" data-page="dashboard" onclick="switchPage('dashboard')">
         <svg viewBox="0 0 24 24"><path d="M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z"/></svg>
         <span>Dashboard</span>
+      </div>
+      <div class="nav-item" data-page="video-test" onclick="switchPage('video-test')">
+        <svg viewBox="0 0 24 24"><path d="M18 4l2 4h-3l-2-4h-2l2 4h-3l-2-4H8l2 4H7L5 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V4h-4z"/></svg>
+        <span>Video Test</span>
       </div>
       <div class="nav-item" data-page="database">
         <svg viewBox="0 0 24 24"><path d="M12 3C7.58 3 4 4.79 4 7v10c0 2.21 3.58 4 8 4s8-1.79 8-4V7c0-2.21-3.58-4-8-4zm6 14c0 .5-2.13 2-6 2s-6-1.5-6-2v-2.23c1.61 1.07 3.71 1.73 6 1.73s4.39-.66 6-1.73V17zm0-5c0 .5-2.13 2-6 2s-6-1.5-6-2V9.77C7.61 10.84 9.71 11.5 12 11.5s4.39-.66 6-1.73V12zm-6-3C8.13 9 6 7.5 6 7s2.13-2 6-2 6 1.5 6 2-2.13 2-6 2z"/></svg>
@@ -174,6 +241,8 @@ body{font-family:'Lato',sans-serif;background:var(--bg);color:var(--text);height
 
   <!-- Main -->
   <div class="main">
+    <!-- ==================== Dashboard Page ==================== -->
+    <div id="page-dashboard" class="page-content active">
     <div class="main-header">
       <h1>Dashboard</h1>
     </div>
@@ -302,21 +371,120 @@ body{font-family:'Lato',sans-serif;background:var(--bg);color:var(--text);height
         </div>
       </div>
     </div>
+    </div><!-- /page-dashboard -->
+
+    <!-- ==================== Video Test Page ==================== -->
+    <div id="page-video-test" class="page-content">
+      <div class="main-header">
+        <h1>Video Test</h1>
+      </div>
+      <div class="layout">
+        <!-- Left panel -->
+        <div class="left-panel">
+          <!-- Upload area -->
+          <div class="upload-area" id="upload-area" onclick="document.getElementById('file-input').click()">
+            <svg class="upload-icon" viewBox="0 0 24 24"><path d="M9 16h6v-6h4l-7-7-7 7h4zm-4 2h14v2H5z"/></svg>
+            <span class="upload-text">Drop videos or click to upload</span>
+            <span class="upload-hint">MP4, AVI, MKV, MOV</span>
+            <input type="file" id="file-input" multiple accept="video/*">
+          </div>
+
+          <!-- Video list -->
+          <div>
+            <div class="section-title">Videos</div>
+            <div id="vt-video-list" class="cam-list"></div>
+          </div>
+
+          <!-- Camera selector -->
+          <div>
+            <div class="section-title">Camera</div>
+            <div class="func-list">
+              <div class="func-item">
+                <span>Homography</span>
+                <select id="vt-camera" class="cam-select">
+                  <option value="cam66">cam66</option>
+                  <option value="cam68">cam68</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <!-- Run button -->
+          <button class="run-btn" id="vt-run-btn" onclick="vtToggleRun()" disabled>
+            <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+            <span id="vt-run-text">Run Test</span>
+          </button>
+
+          <!-- Progress -->
+          <div class="progress-section" id="vt-progress" style="display:none">
+            <div style="display:flex;justify-content:space-between;align-items:center">
+              <span style="font-size:11px;font-weight:600">Processing</span>
+              <span class="state-badge running" id="vt-state-badge">running</span>
+            </div>
+            <div class="progress-bar-track">
+              <div class="progress-bar-fill" id="vt-progress-fill"></div>
+            </div>
+            <div class="progress-text">
+              <span id="vt-progress-text">0 / 0 frames</span>
+              <span id="vt-progress-fps">0 fps</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Right top: Video player -->
+        <div class="video-panel vt-panel">
+          <div class="vt-player-area" id="vt-player-area">
+            <video id="vt-video" style="display:none" controls></video>
+            <img id="vt-stream" style="display:none" alt="Processing stream">
+            <div class="vid-empty" id="vt-placeholder">Upload and select a video</div>
+            <div class="video-bar" id="vt-video-bar" style="display:none">
+              <div class="video-bar-left">
+                <div class="tag">
+                  <svg viewBox="0 0 24 24"><path d="M18 4l2 4h-3l-2-4h-2l2 4h-3l-2-4H8l2 4H7L5 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V4h-4z"/></svg>
+                  <span id="vt-video-name">-</span>
+                </div>
+              </div>
+              <div class="video-bar-right">
+                <div class="tag"><span id="vt-resolution">-</span></div>
+              </div>
+            </div>
+          </div>
+          <!-- Range slider -->
+          <div class="range-slider-section" id="vt-range-section" style="display:none">
+            <div class="range-slider" id="vt-range-slider">
+              <div class="range-track" id="vt-range-track"></div>
+              <div class="range-selected" id="vt-range-selected"></div>
+              <div class="range-handle" id="vt-handle-start" style="left:0%"></div>
+              <div class="range-handle" id="vt-handle-end" style="left:100%"></div>
+            </div>
+            <div class="range-times">
+              <div class="range-time-item">Start: <span id="vt-start-time">00:00</span></div>
+              <div class="range-time-item">End: <span id="vt-end-time">00:00</span></div>
+              <div class="range-time-item">Clip: <span id="vt-clip-duration">00:00</span></div>
+              <div class="range-time-item">Total: <span id="vt-total-duration">00:00</span></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Right bottom: Detection results -->
+        <div class="map3d-panel">
+          <div class="panel-title">Detection Results</div>
+          <div class="map3d-canvas">
+            <canvas id="vt-minimap" width="440" height="220"></canvas>
+          </div>
+        </div>
+      </div>
+    </div><!-- /page-video-test -->
+
   </div>
 </div>
 
-<style>
-.btn-sm{padding:4px 14px;border:none;border-radius:4px;font-size:10px;font-weight:600;cursor:pointer;transition:all .15s}
-.btn-start-sm{background:var(--cam-green);color:#fff}
-.btn-start-sm:hover{background:#1fa85a}
-.btn-stop-sm{background:var(--cam-red);color:#fff}
-.btn-stop-sm:hover{background:#d43d3d}
-</style>
-
 <script>
+// ============================================================
+// Dashboard JS (original)
+// ============================================================
 const COURT_W=8.23,COURT_L=23.77,NET_Y=11.885,SRV_N=5.485,SRV_F=18.285,CX=4.115;
 
-// ---- 测试标定点（来自 image_test 三角化结果）----
 const TEST_BALLS=[
   {label:'B1',x:6.809,y:1.816, z:0.177,color:'#4f88fa'},
   {label:'B2',x:4.197,y:11.986,z:0.081,color:'#29cb6f'},
@@ -339,16 +507,16 @@ function toggleCamDetail(el){
 }
 
 // ---- 多摄像头视频控制 ----
-let _viewMode='single';    // 'single' | 'grid'
-let _selectedCam=null;     // 单路模式下选中的摄像头
-let _lastPipelines={};     // 缓存最后一次 pipelines 状态
-let _renderedKey='';       // 上次渲染的 key，避免不必要重绘
+let _viewMode='single';
+let _selectedCam=null;
+let _lastPipelines={};
+let _renderedKey='';
 
 function setViewMode(mode){
   _viewMode=mode;
   document.getElementById('btn-single').classList.toggle('active',mode==='single');
   document.getElementById('btn-grid').classList.toggle('active',mode==='grid');
-  _renderedKey='';          // 强制重绘
+  _renderedKey='';
   renderVideoArea(_lastPipelines);
 }
 
@@ -419,31 +587,22 @@ function drawCourt(canvas,ballX,ballY){
   function ty(y){return H-margin-y*sy}
 
   ctx.clearRect(0,0,W,H);
-  // Background
   ctx.fillStyle='#1a2e1a';ctx.fillRect(0,0,W,H);
-  // Court surface
   ctx.fillStyle='#2d5a3d';
   ctx.fillRect(tx(0),ty(COURT_L),COURT_W*sx,COURT_L*sy);
-  // Service boxes - slightly different shade
   ctx.fillStyle='#346845';
   ctx.fillRect(tx(0),ty(SRV_F),COURT_W*sx,(SRV_F-SRV_N)*sy);
 
   ctx.strokeStyle='#fff';ctx.lineWidth=1.5;
-  // Court outline
   ctx.strokeRect(tx(0),ty(COURT_L),COURT_W*sx,COURT_L*sy);
-  // Net
   ctx.beginPath();ctx.moveTo(tx(0),ty(NET_Y));ctx.lineTo(tx(COURT_W),ty(NET_Y));
   ctx.strokeStyle='#ccc';ctx.lineWidth=2.5;ctx.stroke();
-  // Service lines
   ctx.strokeStyle='#fff';ctx.lineWidth=1.5;
   [SRV_N,SRV_F].forEach(y=>{ctx.beginPath();ctx.moveTo(tx(0),ty(y));ctx.lineTo(tx(COURT_W),ty(y));ctx.stroke()});
-  // Center service line
   ctx.beginPath();ctx.moveTo(tx(CX),ty(SRV_N));ctx.lineTo(tx(CX),ty(SRV_F));ctx.stroke();
-  // Center marks
   ctx.beginPath();ctx.moveTo(tx(CX),ty(0));ctx.lineTo(tx(CX),ty(0.4));ctx.stroke();
   ctx.beginPath();ctx.moveTo(tx(CX),ty(COURT_L));ctx.lineTo(tx(CX),ty(COURT_L-0.4));ctx.stroke();
 
-  // ---- 测试标定点（minimap 菱形）----
   TEST_BALLS.forEach(tb=>{
     const bx=tx(tb.x),by=ty(tb.y),r=4;
     ctx.beginPath();
@@ -456,7 +615,6 @@ function drawCourt(canvas,ballX,ballY){
     ctx.fillText(tb.label,bx+6,by+3);
   });
 
-  // ---- 实时追踪球 ----
   if(ballX!=null&&ballY!=null){
     const bx=tx(ballX),by=ty(ballY);
     const grd=ctx.createRadialGradient(bx,by,0,bx,by,12);
@@ -467,12 +625,11 @@ function drawCourt(canvas,ballX,ballY){
   }
 }
 
-// ---- 3D Map (simple top-down with height indicator) ----
+// ---- 3D Map ----
 function draw3DMap(canvas,ball){
   const ctx=canvas.getContext('2d'),W=canvas.width,H=canvas.height;
   ctx.clearRect(0,0,W,H);
 
-  // Grid
   const margin=40,cw=W-2*margin,ch=H-2*margin;
   ctx.strokeStyle='rgba(255,255,255,.1)';ctx.lineWidth=0.5;
   for(let i=0;i<=10;i++){
@@ -482,33 +639,26 @@ function draw3DMap(canvas,ball){
     ctx.beginPath();ctx.moveTo(margin,y);ctx.lineTo(W-margin,y);ctx.stroke();
   }
 
-  // Axes labels
   ctx.fillStyle='rgba(255,255,255,.4)';ctx.font='9px Lato';
   ctx.fillText('X (m)',W/2,H-5);
   ctx.save();ctx.translate(10,H/2);ctx.rotate(-Math.PI/2);ctx.fillText('Y (m)',0,0);ctx.restore();
 
-  // Court outline (projected)
   const sx=cw/12,sy=ch/26;
   function px(x){return margin+(x+1.5)*sx}
   function py(y){return H-margin-(y+1)*sy}
   ctx.strokeStyle='rgba(255,255,255,.3)';ctx.lineWidth=1;
   ctx.strokeRect(px(0),py(COURT_L),COURT_W*sx,-COURT_L*sy);
-  // Net
   ctx.beginPath();ctx.moveTo(px(0),py(NET_Y));ctx.lineTo(px(COURT_W),py(NET_Y));ctx.strokeStyle='rgba(255,255,255,.5)';ctx.stroke();
 
   const hScale=ch/10;
 
-  // ---- 测试标定点（菱形标记 + 高度线）----
   TEST_BALLS.forEach(tb=>{
     const bx=px(tb.x),by=py(tb.y),hz=tb.z*hScale;
-    // 地面投影（半透明圆）
     ctx.beginPath();ctx.arc(bx,by,3,0,Math.PI*2);
     ctx.fillStyle=tb.color+'44';ctx.fill();
-    // 高度线（虚线）
     ctx.beginPath();ctx.moveTo(bx,by);ctx.lineTo(bx,by-hz);
     ctx.strokeStyle=tb.color+'99';ctx.lineWidth=1;
     ctx.setLineDash([2,2]);ctx.stroke();ctx.setLineDash([]);
-    // 菱形标记
     const r=5;
     ctx.beginPath();
     ctx.moveTo(bx,by-hz-r);ctx.lineTo(bx+r,by-hz);
@@ -516,12 +666,10 @@ function draw3DMap(canvas,ball){
     ctx.closePath();
     ctx.fillStyle=tb.color;ctx.fill();
     ctx.strokeStyle='rgba(255,255,255,.55)';ctx.lineWidth=1;ctx.stroke();
-    // 标签
     ctx.fillStyle=tb.color;ctx.font='bold 9px Lato';
     ctx.fillText(tb.label+' Z='+tb.z.toFixed(2)+'m',bx+8,by-hz-2);
   });
 
-  // ---- 实时追踪球（红色圆形）----
   if(ball){
     const bx=px(ball.x),by=py(ball.y);
     const hz=ball.z*hScale;
@@ -546,7 +694,6 @@ async function toggleTrackBall(el){
   try{
     await fetch(`/api/function/track/${state}`,{method:'POST'});
   }catch(e){
-    // 回滚 UI
     el.classList.toggle('on');
     console.error('toggleTrackBall failed',e);
   }
@@ -603,6 +750,7 @@ async function poll(){
     const r=await fetch('/api/status');
     const d=await r.json();
     for(const[name,p]of Object.entries(d.pipelines)){
+      if(name.startsWith('_')) continue; // skip internal pipelines
       const badge=document.getElementById('badge-'+name);
       const fpsEl=document.getElementById('fps-'+name);
       if(badge){badge.className='state-badge '+p.state;badge.textContent=p.state}
@@ -624,6 +772,333 @@ async function poll(){
 drawCourt(document.getElementById('minimap'),null,null);
 draw3DMap(document.getElementById('map3d'),null);
 setInterval(poll,500);
+
+// ============================================================
+// Page Switching
+// ============================================================
+function switchPage(page){
+  document.querySelectorAll('.page-content').forEach(el=>el.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(el=>el.classList.remove('active'));
+  const pageEl=document.getElementById('page-'+page);
+  const navEl=document.querySelector(`.nav-item[data-page="${page}"]`);
+  if(pageEl) pageEl.classList.add('active');
+  if(navEl) navEl.classList.add('active');
+  // Load video list when switching to video test
+  if(page==='video-test') vtLoadVideoList();
+}
+
+// ============================================================
+// Video Test JS
+// ============================================================
+let _vtVideos=[];
+let _vtSelected=null;       // selected filename
+let _vtClipStart=0;         // fraction 0-1
+let _vtClipEnd=1;           // fraction 0-1
+let _vtDuration=0;          // video duration in seconds
+let _vtDragging=null;       // 'start'|'end'|null
+let _vtRunning=false;       // is test running
+let _vtPollTimer=null;
+
+// ---- Upload ----
+const uploadArea=document.getElementById('upload-area');
+const fileInput=document.getElementById('file-input');
+
+uploadArea.addEventListener('dragover',e=>{e.preventDefault();uploadArea.classList.add('dragover')});
+uploadArea.addEventListener('dragleave',()=>uploadArea.classList.remove('dragover'));
+uploadArea.addEventListener('drop',e=>{
+  e.preventDefault();
+  uploadArea.classList.remove('dragover');
+  if(e.dataTransfer.files.length) vtUploadFiles(e.dataTransfer.files);
+});
+fileInput.addEventListener('change',()=>{
+  if(fileInput.files.length) vtUploadFiles(fileInput.files);
+  fileInput.value='';
+});
+
+async function vtUploadFiles(files){
+  uploadArea.classList.add('uploading');
+  const fd=new FormData();
+  for(const f of files) fd.append('files',f);
+  try{
+    const r=await fetch('/api/upload-video',{method:'POST',body:fd});
+    const d=await r.json();
+    if(d.status==='ok') vtLoadVideoList();
+  }catch(e){console.error('Upload failed:',e)}
+  uploadArea.classList.remove('uploading');
+}
+
+async function vtLoadVideoList(){
+  try{
+    const r=await fetch('/api/uploaded-videos');
+    const d=await r.json();
+    _vtVideos=d.videos||[];
+    vtRenderVideoList();
+  }catch(e){console.error(e)}
+}
+
+function vtRenderVideoList(){
+  const list=document.getElementById('vt-video-list');
+  if(!_vtVideos.length){
+    list.innerHTML='<div style="font-size:11px;color:var(--text-muted);padding:8px 14px">No videos uploaded</div>';
+    return;
+  }
+  list.innerHTML=_vtVideos.map(v=>{
+    const dur=v.duration?vtFormatTime(v.duration):'--:--';
+    const res=v.width?v.width+'x'+v.height:'';
+    const sel=v.filename===_vtSelected?'selected':'';
+    return `<div class="video-item ${sel}" onclick="vtSelectVideo('${v.filename}')">
+      <svg class="vi-icon" viewBox="0 0 24 24"><path d="M18 4l2 4h-3l-2-4h-2l2 4h-3l-2-4H8l2 4H7L5 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V4h-4z"/></svg>
+      <div class="vi-info">
+        <span class="vi-name">${v.filename}</span>
+        <span class="vi-meta">${dur} | ${v.size_mb} MB${res?' | '+res:''}</span>
+      </div>
+      <div class="vi-delete" onclick="event.stopPropagation();vtDeleteVideo('${v.filename}')" title="Delete">
+        <svg viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function vtSelectVideo(filename){
+  _vtSelected=filename;
+  vtRenderVideoList();
+
+  const video=document.getElementById('vt-video');
+  const placeholder=document.getElementById('vt-placeholder');
+  const stream=document.getElementById('vt-stream');
+  const bar=document.getElementById('vt-video-bar');
+  const rangeSection=document.getElementById('vt-range-section');
+
+  placeholder.style.display='none';
+  stream.style.display='none';
+  video.style.display='block';
+  bar.style.display='flex';
+  rangeSection.style.display='block';
+
+  video.src='/uploads/'+filename;
+  video.load();
+
+  document.getElementById('vt-video-name').textContent=filename;
+
+  const info=_vtVideos.find(v=>v.filename===filename);
+  if(info){
+    document.getElementById('vt-resolution').textContent=
+      (info.width?info.width+'x'+info.height:'')+(info.fps?' @ '+info.fps+'fps':'');
+  }
+
+  video.onloadedmetadata=()=>{
+    _vtDuration=video.duration;
+    _vtClipStart=0;
+    _vtClipEnd=1;
+    vtUpdateSlider();
+    document.getElementById('vt-run-btn').disabled=false;
+  };
+}
+
+async function vtDeleteVideo(filename){
+  try{
+    await fetch('/api/uploaded-video/'+filename,{method:'DELETE'});
+    if(_vtSelected===filename){
+      _vtSelected=null;
+      document.getElementById('vt-video').style.display='none';
+      document.getElementById('vt-placeholder').style.display='flex';
+      document.getElementById('vt-video-bar').style.display='none';
+      document.getElementById('vt-range-section').style.display='none';
+      document.getElementById('vt-run-btn').disabled=true;
+    }
+    vtLoadVideoList();
+  }catch(e){console.error(e)}
+}
+
+// ---- Range Slider ----
+const handleStart=document.getElementById('vt-handle-start');
+const handleEnd=document.getElementById('vt-handle-end');
+const rangeTrack=document.getElementById('vt-range-track');
+
+handleStart.addEventListener('mousedown',e=>{_vtDragging='start';e.preventDefault()});
+handleEnd.addEventListener('mousedown',e=>{_vtDragging='end';e.preventDefault()});
+// Touch support
+handleStart.addEventListener('touchstart',e=>{_vtDragging='start';e.preventDefault()},{passive:false});
+handleEnd.addEventListener('touchstart',e=>{_vtDragging='end';e.preventDefault()},{passive:false});
+
+document.addEventListener('mousemove',e=>{if(_vtDragging) vtOnDrag(e.clientX)});
+document.addEventListener('touchmove',e=>{if(_vtDragging&&e.touches[0]) vtOnDrag(e.touches[0].clientX)},{passive:false});
+document.addEventListener('mouseup',()=>{_vtDragging=null});
+document.addEventListener('touchend',()=>{_vtDragging=null});
+
+function vtOnDrag(clientX){
+  const rect=rangeTrack.getBoundingClientRect();
+  let pct=(clientX-rect.left)/rect.width;
+  pct=Math.max(0,Math.min(1,pct));
+  if(_vtDragging==='start'){
+    _vtClipStart=Math.min(pct,_vtClipEnd-0.005);
+  } else {
+    _vtClipEnd=Math.max(pct,_vtClipStart+0.005);
+  }
+  vtUpdateSlider();
+  // Seek video to preview the position
+  const video=document.getElementById('vt-video');
+  if(video.src){
+    video.currentTime=(_vtDragging==='start'?_vtClipStart:_vtClipEnd)*_vtDuration;
+  }
+}
+
+function vtUpdateSlider(){
+  handleStart.style.left=(_vtClipStart*100)+'%';
+  handleEnd.style.left=(_vtClipEnd*100)+'%';
+  const sel=document.getElementById('vt-range-selected');
+  sel.style.left=(_vtClipStart*100)+'%';
+  sel.style.width=((_vtClipEnd-_vtClipStart)*100)+'%';
+
+  const st=_vtClipStart*_vtDuration;
+  const et=_vtClipEnd*_vtDuration;
+  document.getElementById('vt-start-time').textContent=vtFormatTime(st);
+  document.getElementById('vt-end-time').textContent=vtFormatTime(et);
+  document.getElementById('vt-clip-duration').textContent=vtFormatTime(et-st);
+  document.getElementById('vt-total-duration').textContent=vtFormatTime(_vtDuration);
+}
+
+function vtFormatTime(s){
+  if(!s||isNaN(s)) return '00:00';
+  const m=Math.floor(s/60);
+  const ss=Math.floor(s%60);
+  return String(m).padStart(2,'0')+':'+String(ss).padStart(2,'0');
+}
+
+// ---- Run / Stop ----
+async function vtToggleRun(){
+  if(_vtRunning){
+    // Stop
+    try{await fetch('/api/video-test/stop',{method:'POST'})}catch(e){console.error(e)}
+    vtStopUI();
+  } else {
+    // Run
+    if(!_vtSelected) return;
+    const camera=document.getElementById('vt-camera').value;
+    const startTime=_vtClipStart*_vtDuration;
+    const endTime=_vtClipEnd*_vtDuration;
+
+    try{
+      const r=await fetch('/api/video-test/run',{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({filename:_vtSelected,start_time:startTime,end_time:endTime,camera:camera})
+      });
+      const d=await r.json();
+      if(d.status==='started'){
+        vtStartUI();
+      }
+    }catch(e){console.error(e)}
+  }
+}
+
+function vtStartUI(){
+  _vtRunning=true;
+  const btn=document.getElementById('vt-run-btn');
+  btn.classList.add('stop');
+  document.getElementById('vt-run-text').textContent='Stop';
+  btn.querySelector('svg').innerHTML='<rect x="6" y="6" width="12" height="12"/>';
+
+  document.getElementById('vt-progress').style.display='block';
+
+  // Switch to MJPEG stream view
+  const video=document.getElementById('vt-video');
+  const stream=document.getElementById('vt-stream');
+  video.pause();
+  video.style.display='none';
+  stream.src='/api/camera/_video_test/stream';
+  stream.style.display='block';
+
+  // Start polling status
+  _vtPollTimer=setInterval(vtPollStatus,500);
+}
+
+function vtStopUI(){
+  _vtRunning=false;
+  const btn=document.getElementById('vt-run-btn');
+  btn.classList.remove('stop');
+  document.getElementById('vt-run-text').textContent='Run Test';
+  btn.querySelector('svg').innerHTML='<path d="M8 5v14l11-7z"/>';
+
+  if(_vtPollTimer){clearInterval(_vtPollTimer);_vtPollTimer=null}
+
+  // Switch back to video preview
+  const video=document.getElementById('vt-video');
+  const stream=document.getElementById('vt-stream');
+  stream.src='';
+  stream.style.display='none';
+  video.style.display='block';
+}
+
+async function vtPollStatus(){
+  try{
+    const r=await fetch('/api/video-test/status');
+    const d=await r.json();
+    const total=d.total_frames||1;
+    const done=d.processed_frames||0;
+    const pct=Math.round(done/total*100);
+
+    document.getElementById('vt-progress-fill').style.width=pct+'%';
+    document.getElementById('vt-progress-text').textContent=done+' / '+total+' frames';
+    document.getElementById('vt-progress-fps').textContent=(d.fps||0)+' fps';
+
+    const badge=document.getElementById('vt-state-badge');
+    badge.className='state-badge '+d.state;
+    badge.textContent=d.state;
+
+    // Update minimap with latest detection
+    const det=await fetch('/api/pipeline/_video_test/detection').then(r=>r.json()).catch(()=>null);
+    if(det&&det.detected){
+      vtDrawMinimap(det.x,det.y);
+    }
+
+    if(d.state==='completed'||d.state==='error'||d.state==='idle'){
+      vtStopUI();
+      if(d.state==='completed'){
+        document.getElementById('vt-progress').style.display='block';
+        document.getElementById('vt-state-badge').className='state-badge completed';
+        document.getElementById('vt-state-badge').textContent='completed';
+      }
+    }
+  }catch(e){console.error(e)}
+}
+
+// ---- Video Test Mini Map ----
+function vtDrawMinimap(ballX,ballY){
+  const canvas=document.getElementById('vt-minimap');
+  const ctx=canvas.getContext('2d'),W=canvas.width,H=canvas.height;
+  ctx.clearRect(0,0,W,H);
+
+  const margin=30,cw=W-2*margin,ch=H-2*margin;
+  const sx=cw/COURT_W,sy=ch/COURT_L;
+  function tx(x){return margin+x*sx}
+  function ty(y){return H-margin-y*sy}
+
+  // Court
+  ctx.fillStyle='#1a2e1a';ctx.fillRect(0,0,W,H);
+  ctx.fillStyle='#2d5a3d';ctx.fillRect(tx(0),ty(COURT_L),COURT_W*sx,COURT_L*sy);
+  ctx.strokeStyle='#fff';ctx.lineWidth=1;
+  ctx.strokeRect(tx(0),ty(COURT_L),COURT_W*sx,COURT_L*sy);
+  // Net
+  ctx.beginPath();ctx.moveTo(tx(0),ty(NET_Y));ctx.lineTo(tx(COURT_W),ty(NET_Y));
+  ctx.strokeStyle='#ccc';ctx.lineWidth=2;ctx.stroke();
+  // Service lines
+  ctx.strokeStyle='#fff';ctx.lineWidth=1;
+  [SRV_N,SRV_F].forEach(y=>{ctx.beginPath();ctx.moveTo(tx(0),ty(y));ctx.lineTo(tx(COURT_W),ty(y));ctx.stroke()});
+  ctx.beginPath();ctx.moveTo(tx(CX),ty(SRV_N));ctx.lineTo(tx(CX),ty(SRV_F));ctx.stroke();
+
+  // Ball
+  if(ballX!=null&&ballY!=null){
+    const bx=tx(ballX),by=ty(ballY);
+    ctx.beginPath();ctx.arc(bx,by,6,0,Math.PI*2);ctx.fillStyle='#fa4e4e';ctx.fill();
+    ctx.strokeStyle='#fff';ctx.lineWidth=1;ctx.stroke();
+    ctx.fillStyle='#fff';ctx.font='bold 10px Lato';
+    ctx.fillText(`(${ballX.toFixed(1)}, ${ballY.toFixed(1)})`,bx+10,by-4);
+  }
+}
+
+// Init video test minimap
+vtDrawMinimap(null,null);
 </script>
 </body>
 </html>

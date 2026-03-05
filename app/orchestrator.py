@@ -13,6 +13,7 @@ import numpy as np
 
 from app.config import AppConfig
 from app.pipeline.camera_pipeline import run_pipeline
+from app.pipeline.video_pipeline import run_video_pipeline
 from app.schemas import BallPosition3D, PipelineStatus, SystemStatus, WorldPoint2D
 from app.triangulation import triangulate
 
@@ -62,6 +63,9 @@ class Orchestrator:
         self._recording_info: dict = {}
         self._recording_lock = threading.Lock()
         self._recordings_dir = Path("recordings")
+
+        # Video test
+        self._video_test_handle: Optional[_PipelineHandle] = None
 
     def start_pipeline(self, name: str) -> None:
         if name not in self._handles:
@@ -324,3 +328,103 @@ class Orchestrator:
     @property
     def inference_enabled(self) -> bool:
         return self._inference_enabled
+
+    # ------------------------------------------------------------------
+    # Video test (called from FastAPI)
+    # ------------------------------------------------------------------
+    def start_video_test(
+        self, video_path: str, start_time: float, end_time: float, camera_name: str
+    ) -> dict:
+        """Start processing a video file segment."""
+        if self._video_test_handle is not None and self._video_test_handle.is_alive():
+            self.stop_video_test()
+
+        cam_cfg = self.config.cameras.get(camera_name)
+        if cam_cfg is None:
+            raise ValueError(f"Unknown camera: {camera_name}")
+
+        handle = _PipelineHandle("_video_test")
+        handle.result_queue = mp.Queue(maxsize=256)
+        handle.frame_queue = mp.Queue(maxsize=32)
+        handle.stop_event = mp.Event()
+        handle.status_dict = self._manager.dict(
+            {
+                "state": "starting",
+                "fps": 0.0,
+                "total_frames": 0,
+                "processed_frames": 0,
+                "error_msg": "",
+            }
+        )
+
+        handle.process = mp.Process(
+            target=run_video_pipeline,
+            kwargs={
+                "video_path": video_path,
+                "start_time": start_time,
+                "end_time": end_time,
+                "camera_name": camera_name,
+                "model_path": self.config.model.path,
+                "input_size": tuple(self.config.model.input_size),
+                "frames_in": self.config.model.frames_in,
+                "frames_out": self.config.model.frames_out,
+                "threshold": self.config.model.threshold,
+                "device": self.config.model.device,
+                "homography_path": self.config.homography.path,
+                "homography_key": cam_cfg.homography_key,
+                "result_queue": handle.result_queue,
+                "frame_queue": handle.frame_queue,
+                "stop_event": handle.stop_event,
+                "status_dict": handle.status_dict,
+            },
+            daemon=True,
+        )
+        handle.process.start()
+        logger.info(
+            "[video-test] Started: %s [%.1f-%.1f] cam=%s pid=%d",
+            video_path, start_time, end_time, camera_name, handle.process.pid,
+        )
+
+        self._video_test_handle = handle
+        self._handles["_video_test"] = handle
+
+        # Ensure consumer thread is running
+        if self._consumer_thread is None or not self._consumer_thread.is_alive():
+            self._stopped.clear()
+            self._consumer_thread = threading.Thread(target=self._consume_loop, daemon=True)
+            self._consumer_thread.start()
+
+        return {"status": "started"}
+
+    def stop_video_test(self) -> dict:
+        """Stop video test pipeline."""
+        handle = self._video_test_handle
+        if handle is None:
+            return {"status": "not_running"}
+        if handle.stop_event is not None:
+            handle.stop_event.set()
+        if handle.process is not None:
+            handle.process.join(timeout=10.0)
+            if handle.process.is_alive():
+                handle.process.terminate()
+                handle.process.join(timeout=5.0)
+        self._handles.pop("_video_test", None)
+        self._latest_frames.pop("_video_test", None)
+        self._latest_detections.pop("_video_test", None)
+        self._video_test_handle = None
+        logger.info("[video-test] Stopped")
+        return {"status": "stopped"}
+
+    def get_video_test_status(self) -> dict:
+        """Get video test pipeline status."""
+        handle = self._video_test_handle
+        if handle is None or handle.status_dict is None:
+            return {"state": "idle"}
+        sd = handle.status_dict
+        return {
+            "state": sd.get("state", "idle"),
+            "total_frames": sd.get("total_frames", 0),
+            "processed_frames": sd.get("processed_frames", 0),
+            "fps": round(sd.get("fps", 0.0), 1),
+            "error_msg": sd.get("error_msg", ""),
+        }
