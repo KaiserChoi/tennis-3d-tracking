@@ -97,6 +97,9 @@ def run_pipeline(
                     except Exception:
                         pass
 
+            # Mask out timestamp overlay (top-left corner) to avoid interfering with detection
+            frame[0:41, 0:603] = 0
+
             frame_buffer.append(frame)
             frame_id_buffer.append(frame_id)
 

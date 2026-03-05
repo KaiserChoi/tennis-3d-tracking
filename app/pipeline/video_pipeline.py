@@ -123,6 +123,9 @@ def run_video_pipeline(
                 except Exception:
                     pass
 
+            # Mask out timestamp overlay (top-left corner) to avoid interfering with detection
+            frame[0:41, 0:603] = 0
+
             frame_buffer.append(frame)
             if len(frame_buffer) < frames_in:
                 continue
