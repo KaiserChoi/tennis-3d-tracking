@@ -81,7 +81,7 @@ class Orchestrator:
         model_cfg = self.config.model
 
         handle.result_queue = mp.Queue(maxsize=64)
-        handle.frame_queue = mp.Queue(maxsize=32)
+        handle.frame_queue = mp.Queue(maxsize=128)
         handle.stop_event = mp.Event()
         handle.status_dict = self._manager.dict(
             {
@@ -222,10 +222,17 @@ class Orchestrator:
             self._recordings_dir.mkdir(parents=True, exist_ok=True)
             ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             files = {}
+            rec_start = time.time()
             for name, handle in self._handles.items():
                 if handle.is_alive():
                     fname = str(self._recordings_dir / f"{name}_{ts}.mp4")
-                    self._recording_writers[name] = {"writer": None, "path": fname}
+                    self._recording_writers[name] = {
+                        "writer": None,
+                        "path": fname,
+                        "frame_count": 0,
+                        "last_img": None,
+                        "start_time": rec_start,
+                    }
                     files[name] = fname
             if not files:
                 return {"status": "no_cameras_running", "files": {}}
@@ -234,12 +241,12 @@ class Orchestrator:
                 if handle.status_dict is not None:
                     handle.status_dict["recording_enabled"] = True
             self._recording = True
-            self._recording_info = {"start_time": time.time(), "files": files}
+            self._recording_info = {"start_time": rec_start, "files": files}
             logger.info("Recording started: %s", files)
             return {"status": "recording", "files": files}
 
     def stop_recording(self) -> dict:
-        """停止录像并写入文件。"""
+        """停止录像并写入文件，补帧对齐两路视频时长。"""
         with self._recording_lock:
             if not self._recording:
                 return {"status": "not_recording", "files": {}}
@@ -248,6 +255,18 @@ class Orchestrator:
             for handle in self._handles.values():
                 if handle.status_dict is not None:
                     handle.status_dict["recording_enabled"] = False
+            elapsed = time.time() - self._recording_info.get("start_time", time.time())
+            target_frames = int(elapsed * 25.0)  # 目标帧数 = 时长 × 25fps
+            # 对齐：补帧到相同目标帧数
+            for name, wr_info in self._recording_writers.items():
+                writer = wr_info.get("writer")
+                last_img = wr_info.get("last_img")
+                count = wr_info.get("frame_count", 0)
+                if writer is not None and last_img is not None and count < target_frames:
+                    pad = target_frames - count
+                    for _ in range(pad):
+                        writer.write(last_img)
+                    logger.info("[%s] Padded %d frames (had %d, target %d)", name, pad, count, target_frames)
             files = {}
             for name, wr_info in self._recording_writers.items():
                 writer = wr_info.get("writer")
@@ -255,8 +274,7 @@ class Orchestrator:
                     writer.release()
                 files[name] = wr_info["path"]
             self._recording_writers.clear()
-            elapsed = time.time() - self._recording_info.get("start_time", time.time())
-            logger.info("Recording stopped (%.1fs), files: %s", elapsed, files)
+            logger.info("Recording stopped (%.1fs, target %d frames), files: %s", elapsed, target_frames, files)
             result = {"status": "stopped", "files": files, "duration_s": round(elapsed, 1)}
             self._recording_info = {}
             return result
@@ -272,7 +290,7 @@ class Orchestrator:
         }
 
     def _write_recording_frame(self, name: str, jpeg: bytes) -> None:
-        """解码 JPEG 并写入对应 VideoWriter（在 _recording_lock 外调用）。"""
+        """解码 JPEG 并写入对应 VideoWriter，基于时间戳补帧保证 25fps。"""
         if name not in self._recording_writers:
             return
         wr_info = self._recording_writers[name]
@@ -284,7 +302,19 @@ class Orchestrator:
             if wr_info["writer"] is None:
                 fourcc = cv2.VideoWriter_fourcc(*"mp4v")
                 wr_info["writer"] = cv2.VideoWriter(wr_info["path"], fourcc, 25.0, (w, h))
+            # 基于时间戳计算应写入的帧数，自动补帧填充间隙
+            elapsed = time.time() - wr_info["start_time"]
+            expected_frames = int(elapsed * 25.0)
+            current_count = wr_info["frame_count"]
+            # 如果有间隙，用上一帧填充
+            if current_count < expected_frames - 1 and wr_info["last_img"] is not None:
+                gap = expected_frames - 1 - current_count
+                for _ in range(min(gap, 10)):  # 最多补 10 帧避免卡顿
+                    wr_info["writer"].write(wr_info["last_img"])
+                    wr_info["frame_count"] += 1
             wr_info["writer"].write(img)
+            wr_info["frame_count"] += 1
+            wr_info["last_img"] = img
         except Exception as e:
             logger.error("[%s] Recording write error: %s", name, e)
 
