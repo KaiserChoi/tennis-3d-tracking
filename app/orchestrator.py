@@ -15,6 +15,7 @@ from app.config import AppConfig
 from app.pipeline.camera_pipeline import run_pipeline
 from app.pipeline.video_pipeline import run_video_pipeline
 from app.schemas import BallPosition3D, PipelineStatus, SystemStatus, WorldPoint2D
+from app.trajectory import clean_detections, find_offset_and_triangulate, fit_trajectory
 from app.triangulation import triangulate
 
 logger = logging.getLogger(__name__)
@@ -530,6 +531,126 @@ class Orchestrator:
                 logger.warning("3D computation failed for frame %d: %s", frame_idx, e)
 
         return {"points": results, "stats": stats, "cam_order": cam_names}
+
+    def compute_3d_trajectory(self) -> dict:
+        """Compute 3D trajectory using auto time-offset and spatial parabola fitting.
+
+        Unlike compute_3d_from_detections (which requires frame_index matching),
+        this method works WITHOUT frame synchronization between cameras.
+
+        Steps:
+            1. Extract pixel-level detections from both cameras
+            2. Auto-find optimal time offset via interpolated triangulation
+            3. Triangulate 3D points at the optimal offset
+            4. Fit piecewise spatial parabolas (frame-rate independent)
+
+        Returns dict with raw 3D points, trajectory fit, and smooth curve.
+        """
+        import json
+
+        cam_names = list(self._video_test_detections.keys())
+        if len(cam_names) < 2:
+            return {"error": "Need detections from 2 cameras", "cameras": cam_names}
+
+        cam1_name, cam2_name = cam_names[0], cam_names[1]
+        cam1_cfg = self.config.cameras.get(cam1_name)
+        cam2_cfg = self.config.cameras.get(cam2_name)
+        if not cam1_cfg or not cam2_cfg:
+            return {"error": f"Camera config not found: {cam1_name} or {cam2_name}"}
+
+        # Load homography matrices
+        try:
+            with open(self.config.homography.path) as f:
+                hdata = json.load(f)
+            H1 = np.array(
+                hdata[cam1_cfg.homography_key]["H_image_to_world"], dtype=np.float64
+            )
+            H2 = np.array(
+                hdata[cam2_cfg.homography_key]["H_image_to_world"], dtype=np.float64
+            )
+        except Exception as e:
+            return {"error": f"Failed to load homography: {e}"}
+
+        # Extract pixel detections with confidence: (frame_index, pixel_x, pixel_y, confidence)
+        raw_dets1 = sorted(
+            [
+                (d["frame_index"], d["pixel_x"], d["pixel_y"], d.get("confidence", 999.0))
+                for d in self._video_test_detections[cam1_name]
+            ]
+        )
+        raw_dets2 = sorted(
+            [
+                (d["frame_index"], d["pixel_x"], d["pixel_y"], d.get("confidence", 999.0))
+                for d in self._video_test_detections[cam2_name]
+            ]
+        )
+
+        if not raw_dets1 or not raw_dets2:
+            return {"error": "No detections from one or both cameras"}
+
+        # Use 25fps as nominal (actual timing reconstructed by offset search)
+        fps = 25.0
+
+        # Stage 0: Per-camera detection cleaning
+        dets1, clean_stats1 = clean_detections(raw_dets1, fps, H1)
+        dets2, clean_stats2 = clean_detections(raw_dets2, fps, H2)
+        logger.info(
+            "[3d-traj] Cleaning: %s %d->%d, %s %d->%d",
+            cam1_name, len(raw_dets1), len(dets1),
+            cam2_name, len(raw_dets2), len(dets2),
+        )
+
+        if not dets1 or not dets2:
+            return {"error": "No detections remaining after cleaning"}
+
+        # Stage 1: Auto offset + interpolated triangulation
+        best_dt, points_3d = find_offset_and_triangulate(
+            dets1, dets2, fps, fps, H1, H2,
+            cam1_cfg.position_3d, cam2_cfg.position_3d,
+        )
+
+        if not points_3d:
+            return {"error": "No matched points after offset search"}
+
+        # Stage 2: RANSAC spatial parabolic fit
+        traj_fit = fit_trajectory(points_3d)
+
+        # Compute stats
+        ray_dists = [p["ray_dist"] for p in points_3d]
+        stats = {
+            cam1_name: {
+                "raw_detections": len(raw_dets1),
+                "cleaned_detections": len(dets1),
+                "cleaning": clean_stats1,
+            },
+            cam2_name: {
+                "raw_detections": len(raw_dets2),
+                "cleaned_detections": len(dets2),
+                "cleaning": clean_stats2,
+            },
+            "matched_points": len(points_3d),
+            "time_offset_s": round(best_dt, 4),
+            "time_offset_frames": round(best_dt * fps, 1),
+            "mean_ray_dist": round(float(np.mean(ray_dists)), 4),
+            "max_ray_dist": round(float(np.max(ray_dists)), 4),
+            "n_inliers": traj_fit.get("n_inliers", len(points_3d)),
+            "n_outliers": traj_fit.get("n_outliers", 0),
+        }
+
+        # Round point coordinates for JSON
+        for p in points_3d:
+            p["x"] = round(p["x"], 4)
+            p["y"] = round(p["y"], 4)
+            p["z"] = round(p["z"], 4)
+            p["ray_dist"] = round(p["ray_dist"], 4)
+            p["t"] = round(p["t"], 4)
+
+        return {
+            "points": points_3d,
+            "trajectory": traj_fit,
+            "stats": stats,
+            "cam_order": cam_names,
+        }
 
     def get_video_test_status(self) -> dict:
         """Get video test pipeline status."""

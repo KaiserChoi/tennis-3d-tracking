@@ -364,3 +364,18 @@ async def compute_3d():
         "stats": result.get("stats", {}),
         "cam_order": result.get("cam_order", []),
     }
+
+
+@router.post("/api/video-test/compute-trajectory")
+async def compute_trajectory():
+    """Compute physics-constrained 3D trajectory (no frame sync needed).
+
+    Uses auto time-offset + spatial parabolic fit to reconstruct the ball
+    trajectory without requiring frame-level synchronization between cameras.
+    Returns raw triangulated points, fitted trajectory, and smooth curve.
+    """
+    orch = _get_orch()
+    result = orch.compute_3d_trajectory()
+    if "error" in result:
+        raise HTTPException(400, result["error"])
+    return result
