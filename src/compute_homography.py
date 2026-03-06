@@ -123,8 +123,9 @@ def verify_homography(
 def main():
     src_dir = Path(__file__).parent
 
-    cam66_json = src_dir / "192.168.1.66_01_20260303165138318.json"
-    cam68_json = src_dir / "192.168.1.68_01_20260303164229288.json"
+    # Use 1080p annotations (must match the video resolution used by the pipeline)
+    cam66_json = src_dir / "1080" / "192.168.1.66_01_20260303165138318.json"
+    cam68_json = src_dir / "1080" / "192.168.1.68_01_20260303164229288.json"
 
     # Load image points
     pts66 = load_labelme_points(str(cam66_json))

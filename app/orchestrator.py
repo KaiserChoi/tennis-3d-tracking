@@ -13,6 +13,7 @@ import numpy as np
 
 from app.config import AppConfig
 from app.pipeline.camera_pipeline import run_pipeline
+from app.pipeline.video_pipeline import run_video_pipeline
 from app.schemas import BallPosition3D, PipelineStatus, SystemStatus, WorldPoint2D
 from app.triangulation import triangulate
 
@@ -63,6 +64,10 @@ class Orchestrator:
         self._recording_lock = threading.Lock()
         self._recordings_dir = Path("recordings")
 
+        # Video test
+        self._video_test_handle: Optional[_PipelineHandle] = None
+        self._video_test_detections: dict[str, list[dict]] = {}  # camera_name -> detections
+
     def start_pipeline(self, name: str) -> None:
         if name not in self._handles:
             raise ValueError(f"Unknown pipeline: {name}")
@@ -76,7 +81,7 @@ class Orchestrator:
         model_cfg = self.config.model
 
         handle.result_queue = mp.Queue(maxsize=64)
-        handle.frame_queue = mp.Queue(maxsize=32)
+        handle.frame_queue = mp.Queue(maxsize=128)
         handle.stop_event = mp.Event()
         handle.status_dict = self._manager.dict(
             {
@@ -154,13 +159,16 @@ class Orchestrator:
 
         while not self._stopped.is_set():
             got_any = False
-            for name, handle in self._handles.items():
+            for name, handle in list(self._handles.items()):
                 # 消费检测结果
                 if handle.result_queue is not None:
                     try:
                         while not handle.result_queue.empty():
                             det = handle.result_queue.get_nowait()
                             self._latest_detections[name] = det
+                            if name == "_video_test":
+                                cam = det.get("camera_name", "unknown")
+                                self._video_test_detections.setdefault(cam, []).append(det)
                             got_any = True
                     except Exception:
                         pass
@@ -214,10 +222,17 @@ class Orchestrator:
             self._recordings_dir.mkdir(parents=True, exist_ok=True)
             ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             files = {}
+            rec_start = time.time()
             for name, handle in self._handles.items():
                 if handle.is_alive():
                     fname = str(self._recordings_dir / f"{name}_{ts}.mp4")
-                    self._recording_writers[name] = {"writer": None, "path": fname}
+                    self._recording_writers[name] = {
+                        "writer": None,
+                        "path": fname,
+                        "frame_count": 0,
+                        "last_img": None,
+                        "start_time": rec_start,
+                    }
                     files[name] = fname
             if not files:
                 return {"status": "no_cameras_running", "files": {}}
@@ -226,12 +241,12 @@ class Orchestrator:
                 if handle.status_dict is not None:
                     handle.status_dict["recording_enabled"] = True
             self._recording = True
-            self._recording_info = {"start_time": time.time(), "files": files}
+            self._recording_info = {"start_time": rec_start, "files": files}
             logger.info("Recording started: %s", files)
             return {"status": "recording", "files": files}
 
     def stop_recording(self) -> dict:
-        """停止录像并写入文件。"""
+        """停止录像并写入文件，补帧对齐两路视频时长。"""
         with self._recording_lock:
             if not self._recording:
                 return {"status": "not_recording", "files": {}}
@@ -240,6 +255,18 @@ class Orchestrator:
             for handle in self._handles.values():
                 if handle.status_dict is not None:
                     handle.status_dict["recording_enabled"] = False
+            elapsed = time.time() - self._recording_info.get("start_time", time.time())
+            target_frames = int(elapsed * 25.0)  # 目标帧数 = 时长 × 25fps
+            # 对齐：补帧到相同目标帧数
+            for name, wr_info in self._recording_writers.items():
+                writer = wr_info.get("writer")
+                last_img = wr_info.get("last_img")
+                count = wr_info.get("frame_count", 0)
+                if writer is not None and last_img is not None and count < target_frames:
+                    pad = target_frames - count
+                    for _ in range(pad):
+                        writer.write(last_img)
+                    logger.info("[%s] Padded %d frames (had %d, target %d)", name, pad, count, target_frames)
             files = {}
             for name, wr_info in self._recording_writers.items():
                 writer = wr_info.get("writer")
@@ -247,8 +274,7 @@ class Orchestrator:
                     writer.release()
                 files[name] = wr_info["path"]
             self._recording_writers.clear()
-            elapsed = time.time() - self._recording_info.get("start_time", time.time())
-            logger.info("Recording stopped (%.1fs), files: %s", elapsed, files)
+            logger.info("Recording stopped (%.1fs, target %d frames), files: %s", elapsed, target_frames, files)
             result = {"status": "stopped", "files": files, "duration_s": round(elapsed, 1)}
             self._recording_info = {}
             return result
@@ -264,7 +290,7 @@ class Orchestrator:
         }
 
     def _write_recording_frame(self, name: str, jpeg: bytes) -> None:
-        """解码 JPEG 并写入对应 VideoWriter（在 _recording_lock 外调用）。"""
+        """解码 JPEG 并写入对应 VideoWriter，基于时间戳补帧保证 25fps。"""
         if name not in self._recording_writers:
             return
         wr_info = self._recording_writers[name]
@@ -276,7 +302,19 @@ class Orchestrator:
             if wr_info["writer"] is None:
                 fourcc = cv2.VideoWriter_fourcc(*"mp4v")
                 wr_info["writer"] = cv2.VideoWriter(wr_info["path"], fourcc, 25.0, (w, h))
+            # 基于时间戳计算应写入的帧数，自动补帧填充间隙
+            elapsed = time.time() - wr_info["start_time"]
+            expected_frames = int(elapsed * 25.0)
+            current_count = wr_info["frame_count"]
+            # 如果有间隙，用上一帧填充
+            if current_count < expected_frames - 1 and wr_info["last_img"] is not None:
+                gap = expected_frames - 1 - current_count
+                for _ in range(min(gap, 10)):  # 最多补 10 帧避免卡顿
+                    wr_info["writer"].write(wr_info["last_img"])
+                    wr_info["frame_count"] += 1
             wr_info["writer"].write(img)
+            wr_info["frame_count"] += 1
+            wr_info["last_img"] = img
         except Exception as e:
             logger.error("[%s] Recording write error: %s", name, e)
 
@@ -324,3 +362,185 @@ class Orchestrator:
     @property
     def inference_enabled(self) -> bool:
         return self._inference_enabled
+
+    # ------------------------------------------------------------------
+    # Video test (called from FastAPI)
+    # ------------------------------------------------------------------
+    def start_video_test(
+        self, video_path: str, start_time: float, end_time: float, camera_name: str
+    ) -> dict:
+        """Start processing a video file segment."""
+        if self._video_test_handle is not None and self._video_test_handle.is_alive():
+            self.stop_video_test()
+
+        self._video_test_detections.pop(camera_name, None)
+
+        cam_cfg = self.config.cameras.get(camera_name)
+        if cam_cfg is None:
+            raise ValueError(f"Unknown camera: {camera_name}")
+
+        handle = _PipelineHandle("_video_test")
+        handle.result_queue = mp.Queue(maxsize=256)
+        handle.frame_queue = mp.Queue(maxsize=32)
+        handle.stop_event = mp.Event()
+        handle.status_dict = self._manager.dict(
+            {
+                "state": "starting",
+                "fps": 0.0,
+                "total_frames": 0,
+                "processed_frames": 0,
+                "error_msg": "",
+            }
+        )
+
+        handle.process = mp.Process(
+            target=run_video_pipeline,
+            kwargs={
+                "video_path": video_path,
+                "start_time": start_time,
+                "end_time": end_time,
+                "camera_name": camera_name,
+                "model_path": self.config.model.path,
+                "input_size": tuple(self.config.model.input_size),
+                "frames_in": self.config.model.frames_in,
+                "frames_out": self.config.model.frames_out,
+                "threshold": self.config.model.threshold,
+                "device": self.config.model.device,
+                "homography_path": self.config.homography.path,
+                "homography_key": cam_cfg.homography_key,
+                "result_queue": handle.result_queue,
+                "frame_queue": handle.frame_queue,
+                "stop_event": handle.stop_event,
+                "status_dict": handle.status_dict,
+            },
+            daemon=True,
+        )
+        handle.process.start()
+        logger.info(
+            "[video-test] Started: %s [%.1f-%.1f] cam=%s pid=%d",
+            video_path, start_time, end_time, camera_name, handle.process.pid,
+        )
+
+        self._video_test_handle = handle
+        self._handles["_video_test"] = handle
+
+        # Ensure consumer thread is running
+        if self._consumer_thread is None or not self._consumer_thread.is_alive():
+            self._stopped.clear()
+            self._consumer_thread = threading.Thread(target=self._consume_loop, daemon=True)
+            self._consumer_thread.start()
+
+        return {"status": "started"}
+
+    def stop_video_test(self) -> dict:
+        """Stop video test pipeline."""
+        handle = self._video_test_handle
+        if handle is None:
+            return {"status": "not_running"}
+        if handle.stop_event is not None:
+            handle.stop_event.set()
+        if handle.process is not None:
+            handle.process.join(timeout=10.0)
+            if handle.process.is_alive():
+                handle.process.terminate()
+                handle.process.join(timeout=5.0)
+        self._handles.pop("_video_test", None)
+        self._latest_frames.pop("_video_test", None)
+        self._latest_detections.pop("_video_test", None)
+        self._video_test_handle = None
+        logger.info("[video-test] Stopped")
+        return {"status": "stopped"}
+
+    def get_video_test_detections(self, camera_name: str | None = None) -> list[dict]:
+        """Return accumulated video test detections, optionally filtered by camera."""
+        if camera_name:
+            return list(self._video_test_detections.get(camera_name, []))
+        all_dets: list[dict] = []
+        for cam_dets in self._video_test_detections.values():
+            all_dets.extend(cam_dets)
+        return sorted(all_dets, key=lambda d: d.get("frame_index", 0))
+
+    def clear_video_test_detections(self, camera_name: str | None = None) -> None:
+        """Clear stored video test detections."""
+        if camera_name:
+            self._video_test_detections.pop(camera_name, None)
+        else:
+            self._video_test_detections.clear()
+
+    def compute_3d_from_detections(self) -> dict:
+        """Match detections from two cameras by frame_index and compute 3D positions.
+
+        Returns dict with 'points', 'stats' (per-camera detection counts), and 'cam_order'.
+        """
+        cam_names = list(self._video_test_detections.keys())
+        if len(cam_names) < 2:
+            return {"points": [], "stats": {}, "cam_order": cam_names}
+
+        cam1_name, cam2_name = cam_names[0], cam_names[1]
+        cam1_dets = {d["frame_index"]: d for d in self._video_test_detections[cam1_name]}
+        cam2_dets = {d["frame_index"]: d for d in self._video_test_detections[cam2_name]}
+
+        common_frames = sorted(set(cam1_dets.keys()) & set(cam2_dets.keys()))
+
+        stats = {
+            cam1_name: {
+                "total_detections": len(cam1_dets),
+                "frame_range": [min(cam1_dets.keys()), max(cam1_dets.keys())] if cam1_dets else [],
+            },
+            cam2_name: {
+                "total_detections": len(cam2_dets),
+                "frame_range": [min(cam2_dets.keys()), max(cam2_dets.keys())] if cam2_dets else [],
+            },
+            "common_frames": len(common_frames),
+        }
+        logger.info(
+            "3D compute: %s has %d dets, %s has %d dets, %d common frames",
+            cam1_name, len(cam1_dets), cam2_name, len(cam2_dets), len(common_frames),
+        )
+
+        cam1_cfg = self.config.cameras.get(cam1_name)
+        cam2_cfg = self.config.cameras.get(cam2_name)
+        if not cam1_cfg or not cam2_cfg:
+            logger.error("Camera config not found for %s or %s", cam1_name, cam2_name)
+            return {"points": [], "stats": stats, "cam_order": cam_names}
+
+        results = []
+        for frame_idx in common_frames:
+            d1 = cam1_dets[frame_idx]
+            d2 = cam2_dets[frame_idx]
+            try:
+                x, y, z = triangulate(
+                    (d1["x"], d1["y"]),
+                    (d2["x"], d2["y"]),
+                    cam1_cfg.position_3d,
+                    cam2_cfg.position_3d,
+                )
+                results.append({
+                    "frame_index": frame_idx,
+                    "x": round(x, 4),
+                    "y": round(y, 4),
+                    "z": round(z, 4),
+                    "cam1_pixel": [round(d1["pixel_x"], 1), round(d1["pixel_y"], 1)],
+                    "cam2_pixel": [round(d2["pixel_x"], 1), round(d2["pixel_y"], 1)],
+                    # Per-camera homography world coords for debugging
+                    "cam1_world": [round(d1["x"], 4), round(d1["y"], 4)],
+                    "cam2_world": [round(d2["x"], 4), round(d2["y"], 4)],
+                })
+            except Exception as e:
+                logger.warning("3D computation failed for frame %d: %s", frame_idx, e)
+
+        return {"points": results, "stats": stats, "cam_order": cam_names}
+
+    def get_video_test_status(self) -> dict:
+        """Get video test pipeline status."""
+        handle = self._video_test_handle
+        if handle is None or handle.status_dict is None:
+            return {"state": "idle"}
+        sd = handle.status_dict
+        return {
+            "state": sd.get("state", "idle"),
+            "total_frames": sd.get("total_frames", 0),
+            "processed_frames": sd.get("processed_frames", 0),
+            "fps": round(sd.get("fps", 0.0), 1),
+            "error_msg": sd.get("error_msg", ""),
+        }

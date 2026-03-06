@@ -76,18 +76,21 @@ def run_pipeline(
                 if is_recording or frame_id % 4 == 0:
                     try:
                         h, w = frame.shape[:2]
-                        preview = cv2.resize(frame, (960, int(h * 960 / w))) if w > 960 else frame
-                        _, jpeg = cv2.imencode(
-                            ".jpg", preview, [cv2.IMWRITE_JPEG_QUALITY, 75]
-                        )
                         if is_recording:
-                            # 录像模式：不清空队列，让消费线程自行处理
+                            # 录像模式：原画质，不缩放，JPEG quality 95
+                            _, jpeg = cv2.imencode(
+                                ".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 95]
+                            )
                             try:
-                                frame_queue.put_nowait(jpeg.tobytes())
+                                frame_queue.put(jpeg.tobytes(), timeout=0.5)
                             except Exception:
-                                pass  # 队列满时丢帧
+                                pass  # 队列满超时丢帧
                         else:
-                            # 预览模式：只保留最新帧
+                            # 预览模式：缩放到 960 宽，JPEG quality 75，只保留最新帧
+                            preview = cv2.resize(frame, (960, int(h * 960 / w))) if w > 960 else frame
+                            _, jpeg = cv2.imencode(
+                                ".jpg", preview, [cv2.IMWRITE_JPEG_QUALITY, 75]
+                            )
                             while not frame_queue.empty():
                                 try:
                                     frame_queue.get_nowait()
@@ -96,6 +99,9 @@ def run_pipeline(
                             frame_queue.put_nowait(jpeg.tobytes())
                     except Exception:
                         pass
+
+            # Mask out timestamp overlay (top-left corner) to avoid interfering with detection
+            frame[0:41, 0:603] = 0
 
             frame_buffer.append(frame)
             frame_id_buffer.append(frame_id)
