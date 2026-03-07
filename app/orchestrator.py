@@ -67,6 +67,7 @@ class Orchestrator:
 
         # Video test
         self._video_test_handle: Optional[_PipelineHandle] = None
+        self._video_test_handles: dict[str, _PipelineHandle] = {}  # parallel handles
         self._video_test_detections: dict[str, list[dict]] = {}  # camera_name -> detections
 
     def start_pipeline(self, name: str) -> None:
@@ -167,7 +168,7 @@ class Orchestrator:
                         while not handle.result_queue.empty():
                             det = handle.result_queue.get_nowait()
                             self._latest_detections[name] = det
-                            if name == "_video_test":
+                            if name.startswith("_video_test"):
                                 cam = det.get("camera_name", "unknown")
                                 self._video_test_detections.setdefault(cam, []).append(det)
                             got_any = True
@@ -433,23 +434,124 @@ class Orchestrator:
 
         return {"status": "started"}
 
+    def start_video_test_parallel(self, cameras: list[dict]) -> dict:
+        """Start processing multiple camera videos in parallel.
+
+        Args:
+            cameras: List of dicts with keys: camera_name, video_path, start_time, end_time.
+
+        Returns:
+            Status dict with started camera names.
+        """
+        # Stop any existing video tests (both single and parallel)
+        self.stop_video_test()
+
+        started = []
+        for cam_info in cameras:
+            camera_name = cam_info["camera_name"]
+            video_path = cam_info["video_path"]
+            start_time = cam_info["start_time"]
+            end_time = cam_info["end_time"]
+
+            self._video_test_detections.pop(camera_name, None)
+
+            cam_cfg = self.config.cameras.get(camera_name)
+            if cam_cfg is None:
+                raise ValueError(f"Unknown camera: {camera_name}")
+
+            handle_name = f"_video_test_{camera_name}"
+            handle = _PipelineHandle(handle_name)
+            handle.result_queue = mp.Queue(maxsize=256)
+            handle.frame_queue = mp.Queue(maxsize=32)
+            handle.stop_event = mp.Event()
+            handle.status_dict = self._manager.dict(
+                {
+                    "state": "starting",
+                    "fps": 0.0,
+                    "total_frames": 0,
+                    "processed_frames": 0,
+                    "error_msg": "",
+                }
+            )
+
+            handle.process = mp.Process(
+                target=run_video_pipeline,
+                kwargs={
+                    "video_path": video_path,
+                    "start_time": start_time,
+                    "end_time": end_time,
+                    "camera_name": camera_name,
+                    "model_path": self.config.model.path,
+                    "input_size": tuple(self.config.model.input_size),
+                    "frames_in": self.config.model.frames_in,
+                    "frames_out": self.config.model.frames_out,
+                    "threshold": self.config.model.threshold,
+                    "device": self.config.model.device,
+                    "homography_path": self.config.homography.path,
+                    "homography_key": cam_cfg.homography_key,
+                    "result_queue": handle.result_queue,
+                    "frame_queue": handle.frame_queue,
+                    "stop_event": handle.stop_event,
+                    "status_dict": handle.status_dict,
+                },
+                daemon=True,
+            )
+            handle.process.start()
+            logger.info(
+                "[video-test-parallel] Started: %s [%.1f-%.1f] cam=%s pid=%d",
+                video_path, start_time, end_time, camera_name, handle.process.pid,
+            )
+
+            self._video_test_handles[camera_name] = handle
+            self._handles[handle_name] = handle
+            started.append(camera_name)
+
+        # Ensure consumer thread is running
+        if self._consumer_thread is None or not self._consumer_thread.is_alive():
+            self._stopped.clear()
+            self._consumer_thread = threading.Thread(target=self._consume_loop, daemon=True)
+            self._consumer_thread.start()
+
+        return {"status": "started", "cameras": started}
+
     def stop_video_test(self) -> dict:
-        """Stop video test pipeline."""
+        """Stop video test pipeline (both single and parallel handles)."""
+        had_any = bool(self._video_test_handles) or self._video_test_handle is not None
+
+        # Stop parallel handles
+        for cam_name, handle in list(self._video_test_handles.items()):
+            if handle.stop_event is not None:
+                handle.stop_event.set()
+            if handle.process is not None:
+                handle.process.join(timeout=10.0)
+                if handle.process.is_alive():
+                    handle.process.terminate()
+                    handle.process.join(timeout=5.0)
+            handle_name = f"_video_test_{cam_name}"
+            self._handles.pop(handle_name, None)
+            self._latest_frames.pop(handle_name, None)
+            self._latest_detections.pop(handle_name, None)
+        if self._video_test_handles:
+            logger.info("[video-test-parallel] Stopped %d cameras", len(self._video_test_handles))
+        self._video_test_handles.clear()
+
+        # Stop legacy single handle
         handle = self._video_test_handle
-        if handle is None:
+        if not had_any:
             return {"status": "not_running"}
-        if handle.stop_event is not None:
-            handle.stop_event.set()
-        if handle.process is not None:
-            handle.process.join(timeout=10.0)
-            if handle.process.is_alive():
-                handle.process.terminate()
-                handle.process.join(timeout=5.0)
-        self._handles.pop("_video_test", None)
-        self._latest_frames.pop("_video_test", None)
-        self._latest_detections.pop("_video_test", None)
-        self._video_test_handle = None
-        logger.info("[video-test] Stopped")
+        if handle is not None:
+            if handle.stop_event is not None:
+                handle.stop_event.set()
+            if handle.process is not None:
+                handle.process.join(timeout=10.0)
+                if handle.process.is_alive():
+                    handle.process.terminate()
+                    handle.process.join(timeout=5.0)
+            self._handles.pop("_video_test", None)
+            self._latest_frames.pop("_video_test", None)
+            self._latest_detections.pop("_video_test", None)
+            self._video_test_handle = None
+            logger.info("[video-test] Stopped")
         return {"status": "stopped"}
 
     def get_video_test_detections(self, camera_name: str | None = None) -> list[dict]:
@@ -725,7 +827,56 @@ class Orchestrator:
         }
 
     def get_video_test_status(self) -> dict:
-        """Get video test pipeline status."""
+        """Get video test pipeline status (supports both single and parallel)."""
+        # Parallel mode: combine status from all handles
+        if self._video_test_handles:
+            total_frames = 0
+            processed_frames = 0
+            fps_sum = 0.0
+            cameras_done = 0
+            error_msg = ""
+            per_camera = {}
+
+            for cam_name, handle in self._video_test_handles.items():
+                sd = handle.status_dict
+                t = sd.get("total_frames", 0)
+                p = sd.get("processed_frames", 0)
+                total_frames += t
+                processed_frames += p
+                fps_sum += sd.get("fps", 0.0)
+                state = sd.get("state", "idle")
+                if state in ("completed", "error"):
+                    cameras_done += 1
+                if sd.get("error_msg"):
+                    error_msg += f"{cam_name}: {sd['error_msg']}; "
+                per_camera[cam_name] = {
+                    "state": state,
+                    "total_frames": t,
+                    "processed_frames": p,
+                }
+
+            any_error = any(pc["state"] == "error" for pc in per_camera.values())
+            all_done = cameras_done == len(self._video_test_handles)
+
+            if all_done and any_error:
+                combined_state = "error"
+            elif all_done:
+                combined_state = "completed"
+            elif any(pc["state"] == "running" for pc in per_camera.values()):
+                combined_state = "running"
+            else:
+                combined_state = "starting"
+
+            return {
+                "state": combined_state,
+                "total_frames": total_frames,
+                "processed_frames": processed_frames,
+                "fps": round(fps_sum, 1),
+                "error_msg": error_msg,
+                "per_camera": per_camera,
+            }
+
+        # Legacy single handle
         handle = self._video_test_handle
         if handle is None or handle.status_dict is None:
             return {"state": "idle"}

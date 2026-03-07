@@ -317,6 +317,39 @@ async def run_video_test(request: Request):
         raise HTTPException(500, str(e))
 
 
+@router.post("/api/video-test/run-parallel")
+async def run_video_test_parallel(request: Request):
+    """Start processing multiple camera videos in parallel."""
+    orch = _get_orch()
+    body = await request.json()
+    cameras_raw = body.get("cameras", [])
+
+    cam_list = []
+    for cam in cameras_raw:
+        filename = cam.get("filename")
+        if not filename:
+            raise HTTPException(400, "Each camera entry requires a filename")
+        video_path = _UPLOAD_DIR / filename
+        if not video_path.exists():
+            raise HTTPException(404, f"Video not found: {filename}")
+        cam_list.append(
+            {
+                "camera_name": cam.get("camera", "cam66"),
+                "video_path": str(video_path),
+                "start_time": float(cam.get("start_time", 0)),
+                "end_time": float(cam.get("end_time", 0)),
+            }
+        )
+
+    try:
+        result = orch.start_video_test_parallel(cam_list)
+        return result
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
 @router.post("/api/video-test/stop")
 async def stop_video_test():
     """Stop video test pipeline."""

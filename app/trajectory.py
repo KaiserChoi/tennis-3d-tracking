@@ -635,6 +635,150 @@ def _detect_bounce_robust(
     return candidates[0] if candidates else None
 
 
+def _detect_all_bounces(
+    points: list[dict],
+    z_threshold: float = 0.5,
+    min_segment: int = 3,
+) -> list[int]:
+    """Detect ALL bounce points (local Z minima) in the trajectory.
+
+    A bounce is a local Z minimum below z_threshold where Z rises after and
+    was higher before. Returns sorted list of indices into points.
+    """
+    n = len(points)
+    if n < 2 * min_segment:
+        return []
+
+    zs = [p["z"] for p in points]
+    bounces = []
+
+    for i in range(1, n - 1):
+        if zs[i] >= z_threshold:
+            continue
+        if zs[i] > zs[i - 1] or zs[i] > zs[i + 1]:
+            continue
+        # Verify Z rises after (within next 3 points)
+        rises_after = any(
+            zs[j] > zs[i] + 0.05 for j in range(i + 1, min(i + 4, n))
+        )
+        # Verify Z was higher before (within prev 3 points)
+        higher_before = any(
+            zs[j] > zs[i] + 0.05 for j in range(max(0, i - 3), i)
+        )
+        if rises_after and higher_before:
+            bounces.append(i)
+
+    # Merge bounces that are too close (< min_segment apart) — keep the lowest Z
+    if len(bounces) > 1:
+        merged = [bounces[0]]
+        for b in bounces[1:]:
+            if b - merged[-1] < min_segment:
+                # Keep the one with lower Z
+                if zs[b] < zs[merged[-1]]:
+                    merged[-1] = b
+            else:
+                merged.append(b)
+        bounces = merged
+
+    return bounces
+
+
+def _segment_strokes(
+    points: list[dict],
+    bounce_indices: list[int],
+) -> list[dict]:
+    """Split trajectory into individual strokes at bounce points.
+
+    Each stroke is a ball flight arc between two bounces (or from start to
+    first bounce, or from last bounce to end).
+
+    Returns list of stroke dicts with:
+        - points: subset of trajectory points
+        - start_idx, end_idx: indices into original points list
+        - bounce_before: bounce position (if stroke starts at a bounce)
+        - bounce_after: bounce position (if stroke ends at a bounce)
+        - fit: spatial parabola fit for this stroke
+        - speed_kmh: ball speed for this stroke
+        - landing_point: where Z=0 for this stroke
+    """
+    if not bounce_indices:
+        return []
+
+    strokes = []
+    n = len(points)
+
+    # Build segment boundaries: [0, b0, b1, ..., bN, n-1]
+    boundaries = [0] + bounce_indices + [n - 1]
+
+    for i in range(len(boundaries) - 1):
+        seg_start = boundaries[i]
+        seg_end = boundaries[i + 1]
+
+        # Include the boundary points in the segment
+        seg_points = points[seg_start : seg_end + 1]
+        if len(seg_points) < 3:
+            continue
+
+        # Fit parabola to this segment
+        if len(seg_points) >= 4:
+            fit, _ = fit_spatial_parabola_ransac(
+                seg_points, n_iterations=100, min_inlier_ratio=0.5
+            )
+        else:
+            fit = fit_spatial_parabola(seg_points)
+
+        if fit is None:
+            continue
+
+        # Compute landing point for this stroke
+        landing = None
+        az, bz, cz = fit["az"], fit["bz"], fit["cz"]
+        disc = bz**2 - 4 * az * cz
+        if disc >= 0:
+            sqrt_disc = np.sqrt(disc)
+            y1 = (-bz + sqrt_disc) / (2 * az) if abs(az) > 1e-9 else None
+            y2 = (-bz - sqrt_disc) / (2 * az) if abs(az) > 1e-9 else None
+            candidates = [
+                y for y in [y1, y2]
+                if y is not None and -2 <= y <= _COURT_Y + 2
+            ]
+            if candidates:
+                # Pick root farthest from segment start
+                start_y = seg_points[0]["y"]
+                land_y = max(candidates, key=lambda y: abs(y - start_y))
+                x_land = fit["ax"] * land_y + fit["bx"]
+                landing = {
+                    "x": round(float(x_land), 4),
+                    "y": round(float(land_y), 4),
+                    "z": 0.0,
+                }
+
+        stroke = {
+            "start_idx": seg_start,
+            "end_idx": seg_end,
+            "n_points": len(seg_points),
+            "fit": fit,
+            "speed_kmh": fit["speed_kmh"],
+            "landing_point": landing,
+        }
+
+        # Bounce info
+        if seg_start in bounce_indices:
+            bp = points[seg_start]
+            stroke["bounce_before"] = {
+                "x": bp["x"], "y": bp["y"], "z": bp["z"]
+            }
+        if seg_end in bounce_indices:
+            bp = points[seg_end]
+            stroke["bounce_after"] = {
+                "x": bp["x"], "y": bp["y"], "z": bp["z"]
+            }
+
+        strokes.append(stroke)
+
+    return strokes
+
+
 def fit_trajectory(points: list[dict]) -> dict:
     """Fit piecewise spatial parabola with RANSAC and robust bounce detection.
 
@@ -728,6 +872,28 @@ def fit_trajectory(points: list[dict]) -> dict:
 
     # Landing point (where Z=0 after bounce/apex)
     result["landing_point"] = _find_landing_point(result)
+
+    # Step 5: Detect ball cycles (hit → land → hit → land ...)
+    # Find ALL bounces in the inlier set for multi-stroke analysis
+    all_bounces = _detect_all_bounces(inlier_points)
+    if all_bounces:
+        strokes = _segment_strokes(inlier_points, all_bounces)
+        if strokes:
+            result["strokes"] = strokes
+            result["n_bounces"] = len(all_bounces)
+            result["bounce_positions"] = [
+                {
+                    "x": round(inlier_points[b]["x"], 4),
+                    "y": round(inlier_points[b]["y"], 4),
+                    "z": round(inlier_points[b]["z"], 4),
+                }
+                for b in all_bounces
+            ]
+            logger.info(
+                "Ball cycles: %d bounces, %d strokes detected",
+                len(all_bounces),
+                len(strokes),
+            )
 
     return result
 

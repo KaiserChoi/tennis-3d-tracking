@@ -1022,6 +1022,17 @@ function vtBuildStatsSummary(stats){
       const inCourt=lp.x>=0&&lp.x<=COURT_W&&lp.y>=0&&lp.y<=COURT_L;
       msg+='\nLanding: ('+(COURT_W-lp.x).toFixed(2)+', '+lp.y.toFixed(2)+') '+(inCourt?'IN':'OUT');
     }
+    if(t.strokes&&t.strokes.length>0){
+      msg+='\nStrokes: '+t.strokes.length+' ('+t.n_bounces+' bounces)';
+      t.strokes.forEach((s,i)=>{
+        msg+='\n  S'+(i+1)+': '+s.speed_kmh.toFixed(0)+'km/h';
+        if(s.landing_point){
+          const lp=s.landing_point;
+          const inC=lp.x>=0&&lp.x<=COURT_W&&lp.y>=0&&lp.y<=COURT_L;
+          msg+=' → '+(inC?'IN':'OUT');
+        }
+      });
+    }
   }
   return msg;
 }
@@ -1068,39 +1079,20 @@ function vtUpdatePlaybackStats(){
   ctx.beginPath();ctx.moveTo(mx(CX),my(0));ctx.lineTo(mx(CX),my(0.4));ctx.stroke();
   ctx.beginPath();ctx.moveTo(mx(CX),my(COURT_L));ctx.lineTo(mx(CX),my(COURT_L-0.4));ctx.stroke();
 
-  // --- Draw trajectory points ---
-  const pts=_vt3dPoints;
-  if(pts.length>1){
-    // Trail line
-    ctx.beginPath();
-    ctx.moveTo(mx(pts[0].x),my(pts[0].y));
-    for(let i=1;i<pts.length;i++) ctx.lineTo(mx(pts[i].x),my(pts[i].y));
-    ctx.strokeStyle='rgba(76,175,80,.6)';ctx.lineWidth=1.5;ctx.stroke();
-
-    // Points
-    pts.forEach((p,i)=>{
-      const bx=mx(p.x),by=my(p.y);
-      ctx.beginPath();ctx.arc(bx,by,2.5,0,Math.PI*2);
-      ctx.fillStyle=i===pts.length-1?'#fff':'#4caf50';
-      ctx.fill();
-    });
+  // --- Landing point(s) on minimap ---
+  // Draw all stroke landing points if cycles detected, else single landing point
+  const landingPts=[];
+  if(t.strokes&&t.strokes.length){
+    t.strokes.forEach(s=>{if(s.landing_point) landingPts.push(s.landing_point)});
   }
-
-  // --- Bounce point ---
-  if(t.bounce_pos){
-    const bp=t.bounce_pos;
-    const bx=mx(bp.x),by=my(bp.y);
-    // Glow ring
-    ctx.beginPath();ctx.arc(bx,by,7,0,Math.PI*2);
-    ctx.strokeStyle='rgba(255,167,38,.6)';ctx.lineWidth=2;ctx.stroke();
-    // Center dot
-    ctx.beginPath();ctx.arc(bx,by,3.5,0,Math.PI*2);
-    ctx.fillStyle='#ffa726';ctx.fill();
-  }
-
-  // --- Landing point ---
-  if(t.landing_point){
-    const lp=t.landing_point;
+  if(t.landing_point) landingPts.push(t.landing_point);
+  // Deduplicate by proximity (< 0.5m)
+  const uniqueLPs=[];
+  landingPts.forEach(lp=>{
+    const dup=uniqueLPs.some(u=>Math.hypot(u.x-lp.x,u.y-lp.y)<0.5);
+    if(!dup) uniqueLPs.push(lp);
+  });
+  uniqueLPs.forEach(lp=>{
     const lx=mx(lp.x),ly=my(lp.y);
     const inCourt=lp.x>=0&&lp.x<=COURT_W&&lp.y>=0&&lp.y<=COURT_L;
     const color=inCourt?'#4caf50':'#f44336';
@@ -1113,16 +1105,7 @@ function vtUpdatePlaybackStats(){
     // Label
     ctx.font='bold 9px Lato';ctx.fillStyle=color;
     ctx.fillText(inCourt?'IN':'OUT',lx+11,ly+3);
-  }
-
-  // --- Net crossing indicator ---
-  if(t.net_crossing){
-    const nc=t.net_crossing;
-    const nx=mx(nc.x),ny=my(NET_Y);
-    const clr=nc.clears_net?'#4caf50':'#f44336';
-    ctx.beginPath();ctx.arc(nx,ny,4,0,Math.PI*2);
-    ctx.fillStyle=clr;ctx.globalAlpha=0.7;ctx.fill();ctx.globalAlpha=1;
-  }
+  });
 
   // --- Update stats panel ---
   const shotEl=document.getElementById('vt-hud-shot-type');
@@ -1145,6 +1128,11 @@ function vtUpdatePlaybackStats(){
     const inCourt=lp.x>=0&&lp.x<=COURT_W&&lp.y>=0&&lp.y<=COURT_L;
     shotLabel=(inCourt?'IN':'OUT');
     if(t.net_crossing&&t.net_crossing.clears_net) shotLabel='Net Clear / '+shotLabel;
+  }
+
+  // Add stroke/cycle info if available
+  if(t.strokes&&t.strokes.length>1){
+    shotLabel+=(shotLabel?' · ':'')+t.strokes.length+' strokes';
   }
 
   speedEl.textContent=speedKmh?speedKmh.toFixed(0):'--';
@@ -1836,23 +1824,62 @@ async function vtToggleRun(){
   vtUpdate3DBalls([]);
   vtRender3DTable();
 
-  // Phase 1: Process cam66 video (using View 1 range)
-  _vtPhase='cam66';
-  document.getElementById('vt-phase-label').textContent='Processing cam66 (View 1)...';
+  // Phase 1: Process BOTH cameras in parallel
+  _vtPhase='parallel';
+  document.getElementById('vt-phase-label').textContent='Processing cam66 + cam68 in parallel...';
   document.getElementById('vt-progress-fill').style.width='0%';
   const range1=_vtViewRanges[1];
-  const ok1=await vtRunSingleVideo(vid1,'cam66',range1);
-  if(!_vtRunning) return;
-
-  // Phase 2: Process cam68 video (using View 2 range)
-  _vtPhase='cam68';
-  document.getElementById('vt-phase-label').textContent='Processing cam68 (View 2)...';
-  document.getElementById('vt-progress-fill').style.width='0%';
   const range2=_vtViewRanges[2];
-  const ok2=await vtRunSingleVideo(vid2,'cam68',range2);
+  {
+    const st1=range1.start*range1.duration, et1=range1.end*range1.duration;
+    const st2=range2.start*range2.duration, et2=range2.end*range2.duration;
+    try{
+      const r=await fetch('/api/video-test/run-parallel',{
+        method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({cameras:[
+          {filename:vid1,camera:'cam66',start_time:st1,end_time:et1},
+          {filename:vid2,camera:'cam68',start_time:st2,end_time:et2}
+        ]})
+      });
+      const d=await r.json();
+      if(d.status!=='started'){vtStopUI();return}
+    }catch(e){console.error(e);vtStopUI();return}
+
+    // Hide MJPEG stream, show progress placeholder
+    const video=document.getElementById('vt-video');
+    const stream=document.getElementById('vt-stream');
+    const placeholder=document.getElementById('vt-placeholder');
+    video.style.display='none';stream.src='';stream.style.display='none';
+    placeholder.style.display='flex';
+    placeholder.textContent='Processing both cameras in parallel...';
+
+    // Poll combined status until complete
+    await new Promise((resolve)=>{
+      const poll=setInterval(async()=>{
+        if(!_vtRunning){clearInterval(poll);resolve(false);return}
+        try{
+          const r=await fetch('/api/video-test/status');
+          const d=await r.json();
+          const total=d.total_frames||1;
+          const done=d.processed_frames||0;
+          const pct=Math.round(done/total*100);
+          document.getElementById('vt-progress-fill').style.width=pct+'%';
+          document.getElementById('vt-progress-text').textContent=done+' / '+total+' frames';
+          document.getElementById('vt-progress-fps').textContent=(d.fps||0)+' fps (combined)';
+          const badge=document.getElementById('vt-state-badge');
+          badge.className='state-badge '+d.state;badge.textContent=d.state;
+          if(d.state==='completed'||d.state==='error'){
+            clearInterval(poll);
+            placeholder.style.display='none';
+            resolve(d.state==='completed');
+          }
+        }catch(e){console.error(e)}
+      },500);
+    });
+  }
   if(!_vtRunning) return;
 
-  // Phase 3: Compute trajectory (auto offset + spatial parabola fit)
+  // Phase 2: Compute trajectory (auto offset + spatial parabola fit)
   _vtPhase='3d';
   document.getElementById('vt-phase-label').textContent='Computing 3D trajectory (auto-sync)...';
   let stats={};
