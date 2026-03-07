@@ -565,7 +565,7 @@ body{font-family:'Lato',sans-serif;background:var(--bg);color:var(--text);height
             </div>
           </div>
           <!-- Playback mode: dual camera view -->
-          <div id="vt-playback-area" style="display:none;flex:1;min-height:0;overflow:hidden">
+          <div id="vt-playback-area" style="display:none;flex:1;min-height:0;overflow:hidden;position:relative">
             <div class="playback-dual">
               <div class="playback-cam">
                 <div class="playback-cam-label">cam66 (View 1)</div>
@@ -574,6 +574,14 @@ body{font-family:'Lato',sans-serif;background:var(--bg);color:var(--text);height
               <div class="playback-cam">
                 <div class="playback-cam-label">cam68 (View 2)</div>
                 <img id="vt-play-cam2" alt="cam68 frame">
+              </div>
+            </div>
+            <!-- Trajectory stats overlay -->
+            <div id="vt-playback-stats" style="display:none;position:absolute;bottom:0;left:0;right:0;padding:6px 14px;background:linear-gradient(0deg,rgba(0,0,0,.75) 0%,transparent 100%);pointer-events:none;z-index:2">
+              <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;justify-content:center">
+                <span id="vt-pb-stat-speed" style="font-size:12px;font-weight:700;color:#4fc3f7"></span>
+                <span id="vt-pb-stat-net" style="font-size:12px;font-weight:700"></span>
+                <span id="vt-pb-stat-landing" style="font-size:12px;font-weight:700"></span>
               </div>
             </div>
           </div>
@@ -1001,6 +1009,54 @@ function vtBuildStatsSummary(stats){
   return msg;
 }
 
+function vtUpdatePlaybackStats(){
+  const bar=document.getElementById('vt-playback-stats');
+  const elSpeed=document.getElementById('vt-pb-stat-speed');
+  const elNet=document.getElementById('vt-pb-stat-net');
+  const elLand=document.getElementById('vt-pb-stat-landing');
+  if(!bar) return;
+  const t=_vtTrajectory;
+  if(!t){bar.style.display='none';return;}
+
+  let hasAny=false;
+
+  // Speed (pre-bounce → post-bounce, or single segment)
+  if(t.type==='piecewise'&&t.pre_bounce&&t.post_bounce){
+    elSpeed.textContent='🏓 '+t.pre_bounce.speed_kmh.toFixed(0)+' → '+t.post_bounce.speed_kmh.toFixed(0)+' km/h';
+    hasAny=true;
+  } else if(t.fit&&t.fit.speed_kmh){
+    elSpeed.textContent='🏓 '+t.fit.speed_kmh.toFixed(0)+' km/h';
+    hasAny=true;
+  } else {
+    elSpeed.textContent='';
+  }
+
+  // Net crossing
+  if(t.net_crossing){
+    const nc=t.net_crossing;
+    const icon=nc.clears_net?'✅':'❌';
+    elNet.textContent=icon+' Net '+nc.z.toFixed(2)+'m';
+    if(nc.speed_kmh) elNet.textContent+=' @ '+nc.speed_kmh.toFixed(0)+' km/h';
+    elNet.style.color=nc.clears_net?'#66bb6a':'#ef5350';
+    hasAny=true;
+  } else {
+    elNet.textContent='';
+  }
+
+  // Landing point
+  if(t.landing_point){
+    const lp=t.landing_point;
+    const inCourt=lp.x>=0&&lp.x<=COURT_W&&lp.y>=0&&lp.y<=COURT_L;
+    elLand.textContent=(inCourt?'🟢 IN':'🔴 OUT')+' ('+(COURT_W-lp.x).toFixed(1)+', '+lp.y.toFixed(1)+')';
+    elLand.style.color=inCourt?'#66bb6a':'#ef5350';
+    hasAny=true;
+  } else {
+    elLand.textContent='';
+  }
+
+  bar.style.display=hasAny?'block':'none';
+}
+
 function vtRenderRallySelector(){
   let container=document.getElementById('vt-rally-selector');
   if(!container){
@@ -1050,6 +1106,7 @@ function vtSwitchRally(index){
   if(_vtTrajectory) vtDrawTrajectoryCurve(_vtTrajectory);
   vtRender3DTable();
   vtRenderRallySelector();
+  vtUpdatePlaybackStats();
   // Update stats label
   const msg=vtBuildStatsSummary({n_rallies:_vtRallies.length,rally_sizes:_vtRallies.map(r=>r.points.length)});
   document.getElementById('vt-phase-label').textContent=msg;
@@ -1935,8 +1992,9 @@ function vtEnterPlayback(){
   document.getElementById('vt-pb-speed').value='1';
   _vtPlaybackSpeed=1;
 
-  // Render first frame
+  // Render first frame and stats overlay
   vtRenderPlaybackFrame(0);
+  vtUpdatePlaybackStats();
 }
 
 function vtExitPlayback(){
