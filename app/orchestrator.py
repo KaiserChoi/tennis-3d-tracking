@@ -15,6 +15,7 @@ from app.config import AppConfig
 from app.pipeline.camera_pipeline import run_pipeline
 from app.pipeline.video_pipeline import run_video_pipeline
 from app.schemas import BallPosition3D, PipelineStatus, SystemStatus, WorldPoint2D
+from app.trajectory import clean_detections, find_offset_and_triangulate, fit_trajectory, segment_rallies
 from app.triangulation import triangulate
 
 logger = logging.getLogger(__name__)
@@ -66,6 +67,7 @@ class Orchestrator:
 
         # Video test
         self._video_test_handle: Optional[_PipelineHandle] = None
+        self._video_test_handles: dict[str, _PipelineHandle] = {}  # parallel handles
         self._video_test_detections: dict[str, list[dict]] = {}  # camera_name -> detections
 
     def start_pipeline(self, name: str) -> None:
@@ -166,7 +168,7 @@ class Orchestrator:
                         while not handle.result_queue.empty():
                             det = handle.result_queue.get_nowait()
                             self._latest_detections[name] = det
-                            if name == "_video_test":
+                            if name.startswith("_video_test"):
                                 cam = det.get("camera_name", "unknown")
                                 self._video_test_detections.setdefault(cam, []).append(det)
                             got_any = True
@@ -432,23 +434,124 @@ class Orchestrator:
 
         return {"status": "started"}
 
+    def start_video_test_parallel(self, cameras: list[dict]) -> dict:
+        """Start processing multiple camera videos in parallel.
+
+        Args:
+            cameras: List of dicts with keys: camera_name, video_path, start_time, end_time.
+
+        Returns:
+            Status dict with started camera names.
+        """
+        # Stop any existing video tests (both single and parallel)
+        self.stop_video_test()
+
+        started = []
+        for cam_info in cameras:
+            camera_name = cam_info["camera_name"]
+            video_path = cam_info["video_path"]
+            start_time = cam_info["start_time"]
+            end_time = cam_info["end_time"]
+
+            self._video_test_detections.pop(camera_name, None)
+
+            cam_cfg = self.config.cameras.get(camera_name)
+            if cam_cfg is None:
+                raise ValueError(f"Unknown camera: {camera_name}")
+
+            handle_name = f"_video_test_{camera_name}"
+            handle = _PipelineHandle(handle_name)
+            handle.result_queue = mp.Queue(maxsize=256)
+            handle.frame_queue = mp.Queue(maxsize=32)
+            handle.stop_event = mp.Event()
+            handle.status_dict = self._manager.dict(
+                {
+                    "state": "starting",
+                    "fps": 0.0,
+                    "total_frames": 0,
+                    "processed_frames": 0,
+                    "error_msg": "",
+                }
+            )
+
+            handle.process = mp.Process(
+                target=run_video_pipeline,
+                kwargs={
+                    "video_path": video_path,
+                    "start_time": start_time,
+                    "end_time": end_time,
+                    "camera_name": camera_name,
+                    "model_path": self.config.model.path,
+                    "input_size": tuple(self.config.model.input_size),
+                    "frames_in": self.config.model.frames_in,
+                    "frames_out": self.config.model.frames_out,
+                    "threshold": self.config.model.threshold,
+                    "device": self.config.model.device,
+                    "homography_path": self.config.homography.path,
+                    "homography_key": cam_cfg.homography_key,
+                    "result_queue": handle.result_queue,
+                    "frame_queue": handle.frame_queue,
+                    "stop_event": handle.stop_event,
+                    "status_dict": handle.status_dict,
+                },
+                daemon=True,
+            )
+            handle.process.start()
+            logger.info(
+                "[video-test-parallel] Started: %s [%.1f-%.1f] cam=%s pid=%d",
+                video_path, start_time, end_time, camera_name, handle.process.pid,
+            )
+
+            self._video_test_handles[camera_name] = handle
+            self._handles[handle_name] = handle
+            started.append(camera_name)
+
+        # Ensure consumer thread is running
+        if self._consumer_thread is None or not self._consumer_thread.is_alive():
+            self._stopped.clear()
+            self._consumer_thread = threading.Thread(target=self._consume_loop, daemon=True)
+            self._consumer_thread.start()
+
+        return {"status": "started", "cameras": started}
+
     def stop_video_test(self) -> dict:
-        """Stop video test pipeline."""
+        """Stop video test pipeline (both single and parallel handles)."""
+        had_any = bool(self._video_test_handles) or self._video_test_handle is not None
+
+        # Stop parallel handles
+        for cam_name, handle in list(self._video_test_handles.items()):
+            if handle.stop_event is not None:
+                handle.stop_event.set()
+            if handle.process is not None:
+                handle.process.join(timeout=10.0)
+                if handle.process.is_alive():
+                    handle.process.terminate()
+                    handle.process.join(timeout=5.0)
+            handle_name = f"_video_test_{cam_name}"
+            self._handles.pop(handle_name, None)
+            self._latest_frames.pop(handle_name, None)
+            self._latest_detections.pop(handle_name, None)
+        if self._video_test_handles:
+            logger.info("[video-test-parallel] Stopped %d cameras", len(self._video_test_handles))
+        self._video_test_handles.clear()
+
+        # Stop legacy single handle
         handle = self._video_test_handle
-        if handle is None:
+        if not had_any:
             return {"status": "not_running"}
-        if handle.stop_event is not None:
-            handle.stop_event.set()
-        if handle.process is not None:
-            handle.process.join(timeout=10.0)
-            if handle.process.is_alive():
-                handle.process.terminate()
-                handle.process.join(timeout=5.0)
-        self._handles.pop("_video_test", None)
-        self._latest_frames.pop("_video_test", None)
-        self._latest_detections.pop("_video_test", None)
-        self._video_test_handle = None
-        logger.info("[video-test] Stopped")
+        if handle is not None:
+            if handle.stop_event is not None:
+                handle.stop_event.set()
+            if handle.process is not None:
+                handle.process.join(timeout=10.0)
+                if handle.process.is_alive():
+                    handle.process.terminate()
+                    handle.process.join(timeout=5.0)
+            self._handles.pop("_video_test", None)
+            self._latest_frames.pop("_video_test", None)
+            self._latest_detections.pop("_video_test", None)
+            self._video_test_handle = None
+            logger.info("[video-test] Stopped")
         return {"status": "stopped"}
 
     def get_video_test_detections(self, camera_name: str | None = None) -> list[dict]:
@@ -531,8 +634,249 @@ class Orchestrator:
 
         return {"points": results, "stats": stats, "cam_order": cam_names}
 
+    def compute_3d_trajectory(self) -> dict:
+        """Compute 3D trajectory using auto time-offset and spatial parabola fitting.
+
+        Unlike compute_3d_from_detections (which requires frame_index matching),
+        this method works WITHOUT frame synchronization between cameras.
+
+        Steps:
+            1. Extract pixel-level detections from both cameras
+            2. Auto-find optimal time offset via interpolated triangulation
+            3. Triangulate 3D points at the optimal offset
+            4. Fit piecewise spatial parabolas (frame-rate independent)
+
+        Returns dict with raw 3D points, trajectory fit, and smooth curve.
+        """
+        import json
+
+        cam_names = list(self._video_test_detections.keys())
+        if len(cam_names) < 2:
+            return {"error": "Need detections from 2 cameras", "cameras": cam_names}
+
+        cam1_name, cam2_name = cam_names[0], cam_names[1]
+        cam1_cfg = self.config.cameras.get(cam1_name)
+        cam2_cfg = self.config.cameras.get(cam2_name)
+        if not cam1_cfg or not cam2_cfg:
+            return {"error": f"Camera config not found: {cam1_name} or {cam2_name}"}
+
+        # Load homography matrices
+        try:
+            with open(self.config.homography.path) as f:
+                hdata = json.load(f)
+            H1 = np.array(
+                hdata[cam1_cfg.homography_key]["H_image_to_world"], dtype=np.float64
+            )
+            H2 = np.array(
+                hdata[cam2_cfg.homography_key]["H_image_to_world"], dtype=np.float64
+            )
+        except Exception as e:
+            return {"error": f"Failed to load homography: {e}"}
+
+        # Extract pixel detections with confidence: (frame_index, pixel_x, pixel_y, confidence)
+        raw_dets1 = sorted(
+            [
+                (d["frame_index"], d["pixel_x"], d["pixel_y"], d.get("confidence", 999.0))
+                for d in self._video_test_detections[cam1_name]
+            ]
+        )
+        raw_dets2 = sorted(
+            [
+                (d["frame_index"], d["pixel_x"], d["pixel_y"], d.get("confidence", 999.0))
+                for d in self._video_test_detections[cam2_name]
+            ]
+        )
+
+        if not raw_dets1 or not raw_dets2:
+            return {"error": "No detections from one or both cameras"}
+
+        # Diagnostic: log per-camera pixel and world coord samples
+        def _pixel_to_world(H, px, py):
+            pt = np.array([px, py, 1.0])
+            r = H @ pt
+            return float(r[0] / r[2]), float(r[1] / r[2])
+
+        for cam_label, dets, H in [
+            (cam1_name, raw_dets1, H1),
+            (cam2_name, raw_dets2, H2),
+        ]:
+            sample = dets[:5]
+            world_xs = []
+            for d in dets:
+                wx, _ = _pixel_to_world(H, d[1], d[2])
+                world_xs.append(wx)
+            mean_x = np.mean(world_xs) if world_xs else 0
+            logger.info(
+                "[3d-diag] %s: %d dets, mean_world_x=%.2f, sample pixels: %s",
+                cam_label,
+                len(dets),
+                mean_x,
+                [(round(d[1], 0), round(d[2], 0)) for d in sample],
+            )
+            logger.info(
+                "[3d-diag] %s: sample world coords: %s",
+                cam_label,
+                [
+                    (round(_pixel_to_world(H, d[1], d[2])[0], 2),
+                     round(_pixel_to_world(H, d[1], d[2])[1], 2))
+                    for d in sample
+                ],
+            )
+
+        # Use 25fps as nominal (actual timing reconstructed by offset search)
+        fps = 25.0
+
+        # Stage 0: Per-camera detection cleaning
+        dets1, clean_stats1 = clean_detections(raw_dets1, fps, H1)
+        dets2, clean_stats2 = clean_detections(raw_dets2, fps, H2)
+        logger.info(
+            "[3d-traj] Cleaning: %s %d->%d, %s %d->%d",
+            cam1_name, len(raw_dets1), len(dets1),
+            cam2_name, len(raw_dets2), len(dets2),
+        )
+
+        if not dets1 or not dets2:
+            return {"error": "No detections remaining after cleaning"}
+
+        # Stage 1: Auto offset + interpolated triangulation
+        best_dt, points_3d = find_offset_and_triangulate(
+            dets1, dets2, fps, fps, H1, H2,
+            cam1_cfg.position_3d, cam2_cfg.position_3d,
+        )
+
+        if not points_3d:
+            return {"error": "No matched points after offset search"}
+
+        # Diagnostic: log first 10 triangulated 3D points with per-camera world coords
+        for i, p in enumerate(points_3d[:10]):
+            caw = p.get("cam_a_world", [0, 0])
+            cbw = p.get("cam_b_world", [0, 0])
+            logger.info(
+                "[3d-diag] point[%d] 3D=(%.2f, %.2f, %.2f) ray=%.3f "
+                "camA_world=(%.2f, %.2f) camB_world=(%.2f, %.2f)",
+                i, p["x"], p["y"], p["z"], p["ray_dist"],
+                caw[0], caw[1], cbw[0], cbw[1],
+            )
+
+        # Stage 2: Rally segmentation — split by time gaps / spatial jumps
+        rallies = segment_rallies(points_3d, fps=fps, max_gap_seconds=1.0, min_rally_points=5)
+        logger.info(
+            "[3d-traj] Rally segmentation: %d points -> %d rallies (%s)",
+            len(points_3d),
+            len(rallies),
+            [len(r) for r in rallies],
+        )
+
+        # Stage 3: RANSAC spatial parabolic fit per rally
+        rally_results = []
+        for ri, rally_pts in enumerate(rallies):
+            traj_fit = fit_trajectory(rally_pts)
+            # Round point coordinates for JSON
+            for p in rally_pts:
+                p["x"] = round(p["x"], 4)
+                p["y"] = round(p["y"], 4)
+                p["z"] = round(p["z"], 4)
+                p["ray_dist"] = round(p["ray_dist"], 4)
+                p["t"] = round(p["t"], 4)
+            rally_results.append({
+                "rally_index": ri,
+                "points": rally_pts,
+                "trajectory": traj_fit,
+            })
+
+        # Use the largest rally as the primary result for backward compat
+        primary_rally = max(rally_results, key=lambda r: len(r["points"])) if rally_results else None
+        primary_points = primary_rally["points"] if primary_rally else []
+        primary_traj = primary_rally["trajectory"] if primary_rally else {"type": "insufficient_data"}
+
+        # Collect all points across all rallies for the full point cloud
+        all_points = []
+        for r in rally_results:
+            all_points.extend(r["points"])
+
+        # Compute stats
+        ray_dists = [p["ray_dist"] for p in points_3d]
+        stats = {
+            cam1_name: {
+                "raw_detections": len(raw_dets1),
+                "cleaned_detections": len(dets1),
+                "cleaning": clean_stats1,
+            },
+            cam2_name: {
+                "raw_detections": len(raw_dets2),
+                "cleaned_detections": len(dets2),
+                "cleaning": clean_stats2,
+            },
+            "matched_points": len(points_3d),
+            "n_rallies": len(rallies),
+            "rally_sizes": [len(r) for r in rallies],
+            "time_offset_s": round(best_dt, 4),
+            "time_offset_frames": round(best_dt * fps, 1),
+            "mean_ray_dist": round(float(np.mean(ray_dists)), 4),
+            "max_ray_dist": round(float(np.max(ray_dists)), 4),
+            "n_inliers": primary_traj.get("n_inliers", len(primary_points)),
+            "n_outliers": primary_traj.get("n_outliers", 0),
+        }
+
+        return {
+            "points": primary_points,
+            "trajectory": primary_traj,
+            "rallies": rally_results,
+            "stats": stats,
+            "cam_order": cam_names,
+        }
+
     def get_video_test_status(self) -> dict:
-        """Get video test pipeline status."""
+        """Get video test pipeline status (supports both single and parallel)."""
+        # Parallel mode: combine status from all handles
+        if self._video_test_handles:
+            total_frames = 0
+            processed_frames = 0
+            fps_sum = 0.0
+            cameras_done = 0
+            error_msg = ""
+            per_camera = {}
+
+            for cam_name, handle in self._video_test_handles.items():
+                sd = handle.status_dict
+                t = sd.get("total_frames", 0)
+                p = sd.get("processed_frames", 0)
+                total_frames += t
+                processed_frames += p
+                fps_sum += sd.get("fps", 0.0)
+                state = sd.get("state", "idle")
+                if state in ("completed", "error"):
+                    cameras_done += 1
+                if sd.get("error_msg"):
+                    error_msg += f"{cam_name}: {sd['error_msg']}; "
+                per_camera[cam_name] = {
+                    "state": state,
+                    "total_frames": t,
+                    "processed_frames": p,
+                }
+
+            any_error = any(pc["state"] == "error" for pc in per_camera.values())
+            all_done = cameras_done == len(self._video_test_handles)
+
+            if all_done and any_error:
+                combined_state = "error"
+            elif all_done:
+                combined_state = "completed"
+            elif any(pc["state"] == "running" for pc in per_camera.values()):
+                combined_state = "running"
+            else:
+                combined_state = "starting"
+
+            return {
+                "state": combined_state,
+                "total_frames": total_frames,
+                "processed_frames": processed_frames,
+                "fps": round(fps_sum, 1),
+                "error_msg": error_msg,
+                "per_camera": per_camera,
+            }
+
+        # Legacy single handle
         handle = self._video_test_handle
         if handle is None or handle.status_dict is None:
             return {"state": "idle"}

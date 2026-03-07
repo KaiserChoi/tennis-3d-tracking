@@ -81,8 +81,6 @@ def run_video_pipeline(
         processed_count = 0
         fps_counter = 0
         fps_time = time.time()
-        # Send preview frame at roughly 15 fps
-        preview_interval = max(1, int(fps / 15))
         # Track latest detection for drawing on preview frames
         last_pixel_detection: tuple[float, float, float] | None = None
         preview_scale = 960.0 / vid_w if vid_w > 960 else 1.0
@@ -95,33 +93,9 @@ def run_video_pipeline(
             processed_count += 1
             status_dict["processed_frames"] = processed_count
 
-            # Send preview frame periodically
-            if frame_queue is not None and processed_count % preview_interval == 0:
-                try:
-                    h, w = frame.shape[:2]
-                    if w > 960:
-                        preview = cv2.resize(frame, (960, int(h * preview_scale)))
-                    else:
-                        preview = frame.copy()
-
-                    # Draw ball marker from latest detection
-                    if last_pixel_detection is not None:
-                        dpx, dpy, _dconf = last_pixel_detection
-                        draw_x = int(dpx * preview_scale)
-                        draw_y = int(dpy * preview_scale)
-                        cv2.circle(preview, (draw_x, draw_y), 14, (0, 255, 0), 2)
-                        cv2.circle(preview, (draw_x, draw_y), 4, (0, 255, 0), -1)
-
-                    _, jpeg = cv2.imencode(".jpg", preview, [cv2.IMWRITE_JPEG_QUALITY, 75])
-                    # Only keep latest frame
-                    while not frame_queue.empty():
-                        try:
-                            frame_queue.get_nowait()
-                        except Exception:
-                            break
-                    frame_queue.put_nowait(jpeg.tobytes())
-                except Exception:
-                    pass
+            # Save unmasked frame for preview if this completes a batch
+            if frame_queue is not None and len(frame_buffer) + 1 >= frames_in:
+                _preview_frame = frame.copy()
 
             # Mask out timestamp overlay (top-left corner) to avoid interfering with detection
             frame[0:41, 0:603] = 0
@@ -166,6 +140,30 @@ def run_video_pipeline(
 
                 try:
                     result_queue.put_nowait(detection)
+                except Exception:
+                    pass
+
+            # Send preview AFTER inference so detection overlay matches the displayed frame
+            if frame_queue is not None:
+                try:
+                    h, w = _preview_frame.shape[:2]
+                    if w > 960:
+                        preview = cv2.resize(_preview_frame, (960, int(h * preview_scale)))
+                    else:
+                        preview = _preview_frame
+                    if last_pixel_detection is not None:
+                        dpx, dpy, _dconf = last_pixel_detection
+                        draw_x = int(dpx * preview_scale)
+                        draw_y = int(dpy * preview_scale)
+                        cv2.circle(preview, (draw_x, draw_y), 14, (0, 255, 0), 2)
+                        cv2.circle(preview, (draw_x, draw_y), 4, (0, 255, 0), -1)
+                    _, jpeg = cv2.imencode(".jpg", preview, [cv2.IMWRITE_JPEG_QUALITY, 75])
+                    while not frame_queue.empty():
+                        try:
+                            frame_queue.get_nowait()
+                        except Exception:
+                            break
+                    frame_queue.put_nowait(jpeg.tobytes())
                 except Exception:
                     pass
 

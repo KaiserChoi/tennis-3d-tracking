@@ -36,8 +36,6 @@ class BallDetector:
         self.output_name = self.session.get_outputs()[0].name
 
         self._use_cuda = "CUDAExecutionProvider" in self.session.get_providers()
-        if self._use_cuda:
-            self.io_binding = self.session.io_binding()
         logger.info("BallDetector ready (CUDA=%s)", self._use_cuda)
 
     @staticmethod
@@ -72,23 +70,11 @@ class BallDetector:
         # Add batch dim: (1, frames_in*3, H, W)
         input_tensor = stacked[np.newaxis].astype(np.float32)
 
-        if self._use_cuda:
-            input_torch = torch.from_numpy(input_tensor).cuda()
-            self.io_binding.bind_input(
-                name=self.input_name,
-                device_type="cuda",
-                device_id=0,
-                element_type=np.float32,
-                shape=tuple(input_torch.shape),
-                buffer_ptr=input_torch.data_ptr(),
-            )
-            self.io_binding.bind_output(name=self.output_name)
-            self.session.run_with_iobinding(self.io_binding)
-            output = self.io_binding.copy_outputs_to_cpu()[0]
-        else:
-            output = self.session.run(
-                [self.output_name], {self.input_name: input_tensor}
-            )[0]
+        # session.run() uses CUDA EP internally when available — no need for
+        # io_binding (which has known output corruption issues with some models).
+        output = self.session.run(
+            [self.output_name], {self.input_name: input_tensor}
+        )[0]
 
         # output shape: (1, frames_out, H, W)
         output = torch.sigmoid(torch.from_numpy(output[0])).numpy()
