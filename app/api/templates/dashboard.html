@@ -215,6 +215,16 @@ body{font-family:'Lato',sans-serif;background:var(--bg);color:var(--text);height
 .playback-cam{flex:1;position:relative;min-width:0;background:#000}
 .playback-cam img{width:100%;height:100%;object-fit:contain;display:block;background:#000}
 .playback-cam-label{position:absolute;top:6px;left:8px;font-size:9px;font-weight:700;background:rgba(0,0,0,.65);color:#fff;padding:2px 8px;border-radius:3px;pointer-events:none;z-index:1}
+
+/* SwingVision-style HUD overlay */
+.hud-overlay{position:absolute;top:8px;right:8px;z-index:3;pointer-events:none;display:flex;flex-direction:column;align-items:flex-end;gap:0}
+.hud-minimap-wrap{background:rgba(10,20,10,.82);border-radius:8px;padding:6px;backdrop-filter:blur(8px);border:1px solid rgba(255,255,255,.12);box-shadow:0 4px 20px rgba(0,0,0,.5)}
+.hud-minimap-wrap canvas{display:block;border-radius:4px}
+.hud-stats-panel{background:rgba(10,20,10,.82);border-radius:8px;padding:8px 14px;backdrop-filter:blur(8px);border:1px solid rgba(255,255,255,.12);margin-top:6px;display:flex;align-items:center;gap:14px;box-shadow:0 4px 20px rgba(0,0,0,.5)}
+.hud-shot-type{font-size:13px;font-weight:700;color:rgba(255,255,255,.85);line-height:1.2}
+.hud-speed-row{display:flex;align-items:baseline;gap:4px}
+.hud-speed-val{font-size:28px;font-weight:800;color:#fff;letter-spacing:-1px;line-height:1}
+.hud-speed-unit{font-size:12px;font-weight:700;color:rgba(255,255,255,.5);letter-spacing:1px}
 .playback-controls{display:flex;align-items:center;gap:8px;padding:8px 16px;background:#1a1a1a;border-top:1px solid rgba(255,255,255,.06)}
 .playback-controls .pb-btn{background:none;border:none;color:var(--text);cursor:pointer;padding:4px;display:flex;align-items:center;justify-content:center;border-radius:4px;transition:background .15s}
 .playback-controls .pb-btn:hover{background:rgba(255,255,255,.1)}
@@ -576,12 +586,19 @@ body{font-family:'Lato',sans-serif;background:var(--bg);color:var(--text);height
                 <img id="vt-play-cam2" alt="cam68 frame">
               </div>
             </div>
-            <!-- Trajectory stats overlay -->
-            <div id="vt-playback-stats" style="display:none;position:absolute;bottom:0;left:0;right:0;padding:6px 14px;background:linear-gradient(0deg,rgba(0,0,0,.75) 0%,transparent 100%);pointer-events:none;z-index:2">
-              <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;justify-content:center">
-                <span id="vt-pb-stat-speed" style="font-size:12px;font-weight:700;color:#4fc3f7"></span>
-                <span id="vt-pb-stat-net" style="font-size:12px;font-weight:700"></span>
-                <span id="vt-pb-stat-landing" style="font-size:12px;font-weight:700"></span>
+            <!-- SwingVision-style HUD overlay -->
+            <div id="vt-hud-overlay" class="hud-overlay" style="display:none">
+              <!-- Minimap court -->
+              <div class="hud-minimap-wrap">
+                <canvas id="vt-hud-minimap" width="160" height="280"></canvas>
+              </div>
+              <!-- Speed + stats panel below minimap -->
+              <div class="hud-stats-panel">
+                <div id="vt-hud-shot-type" class="hud-shot-type"></div>
+                <div class="hud-speed-row">
+                  <span id="vt-hud-speed-val" class="hud-speed-val">--</span>
+                  <span class="hud-speed-unit">KM/H</span>
+                </div>
               </div>
             </div>
           </div>
@@ -1010,51 +1027,128 @@ function vtBuildStatsSummary(stats){
 }
 
 function vtUpdatePlaybackStats(){
-  const bar=document.getElementById('vt-playback-stats');
-  const elSpeed=document.getElementById('vt-pb-stat-speed');
-  const elNet=document.getElementById('vt-pb-stat-net');
-  const elLand=document.getElementById('vt-pb-stat-landing');
-  if(!bar) return;
+  const overlay=document.getElementById('vt-hud-overlay');
+  if(!overlay) return;
   const t=_vtTrajectory;
-  if(!t){bar.style.display='none';return;}
+  if(!t||!_vt3dPoints.length){overlay.style.display='none';return;}
+  overlay.style.display='flex';
 
-  let hasAny=false;
+  // --- Draw minimap ---
+  const canvas=document.getElementById('vt-hud-minimap');
+  const ctx=canvas.getContext('2d');
+  const W=canvas.width, H=canvas.height;
+  const pad=8, cw=W-2*pad, ch=H-2*pad;
+  const sx=cw/COURT_W, sy=ch/COURT_L;
+  function mx(x){return pad+(COURT_W-x)*sx}  // mirror X
+  function my(y){return H-pad-y*sy}
 
-  // Speed (pre-bounce → post-bounce, or single segment)
-  if(t.type==='piecewise'&&t.pre_bounce&&t.post_bounce){
-    elSpeed.textContent='🏓 '+t.pre_bounce.speed_kmh.toFixed(0)+' → '+t.post_bounce.speed_kmh.toFixed(0)+' km/h';
-    hasAny=true;
-  } else if(t.fit&&t.fit.speed_kmh){
-    elSpeed.textContent='🏓 '+t.fit.speed_kmh.toFixed(0)+' km/h';
-    hasAny=true;
-  } else {
-    elSpeed.textContent='';
+  ctx.clearRect(0,0,W,H);
+
+  // Court surface
+  ctx.fillStyle='#1a3a22';
+  ctx.fillRect(0,0,W,H);
+  ctx.fillStyle='#295e38';
+  ctx.fillRect(mx(COURT_W),my(COURT_L),COURT_W*sx,COURT_L*sy);
+  // Service boxes
+  ctx.fillStyle='#2f6b40';
+  ctx.fillRect(mx(COURT_W),my(SRV_F),COURT_W*sx,(SRV_F-SRV_N)*sy);
+
+  // Court lines
+  ctx.strokeStyle='rgba(255,255,255,.7)';ctx.lineWidth=1;
+  ctx.strokeRect(mx(COURT_W),my(COURT_L),COURT_W*sx,COURT_L*sy);
+  // Net
+  ctx.beginPath();ctx.moveTo(mx(COURT_W),my(NET_Y));ctx.lineTo(mx(0),my(NET_Y));
+  ctx.strokeStyle='rgba(255,255,255,.85)';ctx.lineWidth=2;ctx.stroke();
+  // Service lines
+  ctx.strokeStyle='rgba(255,255,255,.6)';ctx.lineWidth=1;
+  [SRV_N,SRV_F].forEach(y=>{ctx.beginPath();ctx.moveTo(mx(COURT_W),my(y));ctx.lineTo(mx(0),my(y));ctx.stroke()});
+  // Center service line
+  ctx.beginPath();ctx.moveTo(mx(CX),my(SRV_N));ctx.lineTo(mx(CX),my(SRV_F));ctx.stroke();
+  // Center marks
+  ctx.beginPath();ctx.moveTo(mx(CX),my(0));ctx.lineTo(mx(CX),my(0.4));ctx.stroke();
+  ctx.beginPath();ctx.moveTo(mx(CX),my(COURT_L));ctx.lineTo(mx(CX),my(COURT_L-0.4));ctx.stroke();
+
+  // --- Draw trajectory points ---
+  const pts=_vt3dPoints;
+  if(pts.length>1){
+    // Trail line
+    ctx.beginPath();
+    ctx.moveTo(mx(pts[0].x),my(pts[0].y));
+    for(let i=1;i<pts.length;i++) ctx.lineTo(mx(pts[i].x),my(pts[i].y));
+    ctx.strokeStyle='rgba(76,175,80,.6)';ctx.lineWidth=1.5;ctx.stroke();
+
+    // Points
+    pts.forEach((p,i)=>{
+      const bx=mx(p.x),by=my(p.y);
+      ctx.beginPath();ctx.arc(bx,by,2.5,0,Math.PI*2);
+      ctx.fillStyle=i===pts.length-1?'#fff':'#4caf50';
+      ctx.fill();
+    });
   }
 
-  // Net crossing
+  // --- Bounce point ---
+  if(t.bounce_pos){
+    const bp=t.bounce_pos;
+    const bx=mx(bp.x),by=my(bp.y);
+    // Glow ring
+    ctx.beginPath();ctx.arc(bx,by,7,0,Math.PI*2);
+    ctx.strokeStyle='rgba(255,167,38,.6)';ctx.lineWidth=2;ctx.stroke();
+    // Center dot
+    ctx.beginPath();ctx.arc(bx,by,3.5,0,Math.PI*2);
+    ctx.fillStyle='#ffa726';ctx.fill();
+  }
+
+  // --- Landing point ---
+  if(t.landing_point){
+    const lp=t.landing_point;
+    const lx=mx(lp.x),ly=my(lp.y);
+    const inCourt=lp.x>=0&&lp.x<=COURT_W&&lp.y>=0&&lp.y<=COURT_L;
+    const color=inCourt?'#4caf50':'#f44336';
+    // Outer ring
+    ctx.beginPath();ctx.arc(lx,ly,8,0,Math.PI*2);
+    ctx.strokeStyle=color;ctx.lineWidth=2;ctx.stroke();
+    // Inner fill
+    ctx.beginPath();ctx.arc(lx,ly,4,0,Math.PI*2);
+    ctx.fillStyle=color;ctx.fill();
+    // Label
+    ctx.font='bold 9px Lato';ctx.fillStyle=color;
+    ctx.fillText(inCourt?'IN':'OUT',lx+11,ly+3);
+  }
+
+  // --- Net crossing indicator ---
   if(t.net_crossing){
     const nc=t.net_crossing;
-    const icon=nc.clears_net?'✅':'❌';
-    elNet.textContent=icon+' Net '+nc.z.toFixed(2)+'m';
-    if(nc.speed_kmh) elNet.textContent+=' @ '+nc.speed_kmh.toFixed(0)+' km/h';
-    elNet.style.color=nc.clears_net?'#66bb6a':'#ef5350';
-    hasAny=true;
-  } else {
-    elNet.textContent='';
+    const nx=mx(nc.x),ny=my(NET_Y);
+    const clr=nc.clears_net?'#4caf50':'#f44336';
+    ctx.beginPath();ctx.arc(nx,ny,4,0,Math.PI*2);
+    ctx.fillStyle=clr;ctx.globalAlpha=0.7;ctx.fill();ctx.globalAlpha=1;
   }
 
-  // Landing point
+  // --- Update stats panel ---
+  const shotEl=document.getElementById('vt-hud-shot-type');
+  const speedEl=document.getElementById('vt-hud-speed-val');
+
+  // Speed value — prefer net crossing speed, fall back to segment speed
+  let speedKmh=null;
+  let shotLabel='';
+  if(t.net_crossing&&t.net_crossing.speed_kmh){
+    speedKmh=t.net_crossing.speed_kmh;
+    shotLabel=t.net_crossing.clears_net?'Net Clear':'Net Fault';
+  } else if(t.type==='piecewise'&&t.pre_bounce){
+    speedKmh=t.pre_bounce.speed_kmh;
+  } else if(t.fit){
+    speedKmh=t.fit.speed_kmh;
+  }
+
   if(t.landing_point){
     const lp=t.landing_point;
     const inCourt=lp.x>=0&&lp.x<=COURT_W&&lp.y>=0&&lp.y<=COURT_L;
-    elLand.textContent=(inCourt?'🟢 IN':'🔴 OUT')+' ('+(COURT_W-lp.x).toFixed(1)+', '+lp.y.toFixed(1)+')';
-    elLand.style.color=inCourt?'#66bb6a':'#ef5350';
-    hasAny=true;
-  } else {
-    elLand.textContent='';
+    shotLabel=(inCourt?'IN':'OUT');
+    if(t.net_crossing&&t.net_crossing.clears_net) shotLabel='Net Clear / '+shotLabel;
   }
 
-  bar.style.display=hasAny?'block':'none';
+  speedEl.textContent=speedKmh?speedKmh.toFixed(0):'--';
+  shotEl.textContent=shotLabel;
 }
 
 function vtRenderRallySelector(){
