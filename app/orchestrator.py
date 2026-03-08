@@ -629,6 +629,22 @@ class Orchestrator:
         else:
             self._video_test_detections.clear()
 
+    def get_video_test_detections_since(self, cursors: dict[str, int]) -> dict[str, list[dict]]:
+        """Return detections newer than cursor index per camera.
+
+        Args:
+            cursors: Maps camera name to last-seen index, e.g. {"cam66": 42, "cam68": 38}.
+
+        Returns:
+            Dict of camera_name -> list of new detections since cursor.
+        """
+        result: dict[str, list[dict]] = {}
+        for cam, dets in self._video_test_detections.items():
+            start = cursors.get(cam, 0)
+            if start < len(dets):
+                result[cam] = dets[start:]
+        return result
+
     def compute_3d_from_detections(self) -> dict:
         """Match detections from two cameras by frame_index and compute 3D positions.
 

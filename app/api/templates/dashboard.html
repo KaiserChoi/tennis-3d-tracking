@@ -200,8 +200,8 @@ body{font-family:'Lato',sans-serif;background:var(--bg);color:var(--text);height
 
 /* Detection table */
 .det-split{display:flex;flex-direction:row;height:100%;overflow:hidden}
-.det-split .det-map{flex-shrink:0;width:280px;display:flex;flex-direction:column}
-.det-split .det-table-wrap{flex:1;display:flex;flex-direction:column;min-width:0;border-left:1px solid rgba(255,255,255,.06)}
+.det-split .det-map{flex:1;min-width:0;display:flex;flex-direction:column}
+.det-split .det-table-wrap{flex:2;display:flex;flex-direction:column;min-width:0;border-left:1px solid rgba(255,255,255,.06)}
 #vt-det-table-wrap{flex:1;overflow-y:auto;font-size:10px}
 #vt-det-table-wrap table{width:100%;border-collapse:collapse}
 #vt-det-table-wrap th{position:sticky;top:0;background:var(--card-bg);z-index:1;padding:3px 6px;font-weight:600;color:var(--text-muted);font-size:9px}
@@ -243,6 +243,26 @@ body{font-family:'Lato',sans-serif;background:var(--bg);color:var(--text);height
 .pg-cam{position:relative;background:#000;overflow:hidden;min-height:0}
 .pg-cam img{width:100%;height:100%;object-fit:contain;display:block;background:#000}
 .pg-cam-label{position:absolute;top:6px;left:8px;font-size:9px;font-weight:700;background:rgba(0,0,0,.65);color:#fff;padding:2px 8px;border-radius:3px;pointer-events:none;z-index:1}
+.vt-ball-overlay{position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:2}
+.vt-ball-toggle{position:absolute;top:6px;right:8px;z-index:3;background:rgba(0,0,0,.65);border:1px solid rgba(76,175,80,.5);color:#4caf50;font-size:9px;font-weight:700;padding:2px 8px;border-radius:3px;cursor:pointer;user-select:none;transition:background .15s,border-color .15s}
+.vt-ball-toggle:hover{background:rgba(76,175,80,.2)}
+.vt-ball-toggle.active{background:rgba(76,175,80,.25);border-color:#4caf50}
+.vt-edit-toggle{background:rgba(0,0,0,.65);border:1px solid rgba(255,152,0,.5);color:#ff9800;font-size:9px;font-weight:700;padding:2px 8px;border-radius:3px;cursor:pointer;user-select:none;transition:background .15s,border-color .15s;white-space:nowrap}
+.vt-edit-toggle:hover{background:rgba(255,152,0,.15)}
+.vt-edit-toggle.active{background:rgba(255,152,0,.25);border-color:#ff9800}
+.vt-edit-toolbar{display:flex;align-items:center;gap:6px;padding:2px 8px;background:#1a1a1a;border-top:1px solid rgba(255,152,0,.3);min-height:28px;font-size:10px}
+.vt-edit-mode-label{color:#ff9800;font-weight:700;font-size:10px;letter-spacing:.5px;margin-right:4px}
+.vt-edit-tool-btn{background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.15);color:#ccc;font-size:9px;font-weight:600;padding:2px 10px;border-radius:3px;cursor:pointer;transition:all .15s}
+.vt-edit-tool-btn:hover{background:rgba(255,255,255,.15)}
+.vt-edit-tool-btn.active{background:rgba(255,152,0,.25);border-color:#ff9800;color:#ff9800}
+.vt-edit-toolbar .btn-sm{font-size:9px;padding:2px 10px;border-radius:3px;cursor:pointer;border:1px solid rgba(255,255,255,.15);font-weight:600}
+.vt-edit-toolbar .btn-del{background:rgba(244,67,54,.15);color:#f44336;border-color:rgba(244,67,54,.4)}
+.vt-edit-toolbar .btn-del:disabled{opacity:.3;cursor:default}
+.vt-edit-toolbar .btn-undo{background:rgba(255,255,255,.08);color:#aaa}
+.vt-ball-overlay.edit-mode{pointer-events:auto;cursor:crosshair}
+.vt-zoom-indicator{position:absolute;bottom:6px;right:8px;font-size:10px;background:rgba(0,0,0,.75);color:#fff;padding:2px 8px;border-radius:3px;z-index:5;display:none;user-select:none;pointer-events:auto}
+.vt-zoom-indicator button{background:none;border:none;color:#ff9800;cursor:pointer;font-size:10px;margin-left:6px;padding:0}
+.vt-zoom-indicator button:hover{text-decoration:underline}
 .pg-3d{grid-column:1/3;background:#1a1a2e;overflow:hidden;min-height:0;border-radius:4px}
 .pg-sidebar{grid-row:1/3;grid-column:3;display:flex;flex-direction:column;gap:4px;overflow-y:auto;background:rgba(10,20,10,.82);border-radius:8px;padding:6px;backdrop-filter:blur(8px);border:1px solid rgba(255,255,255,.12)}
 .pg-minimap-wrap{flex-shrink:0}
@@ -261,6 +281,10 @@ body{font-family:'Lato',sans-serif;background:var(--bg);color:var(--text);height
 .pb-marker:hover{transform:translateX(-50%) scale(1.6)}
 .pb-marker::after{content:attr(data-tip);position:absolute;bottom:10px;left:50%;transform:translateX(-50%);background:#222;color:#fff;font-size:8px;white-space:nowrap;padding:2px 6px;border-radius:3px;opacity:0;pointer-events:none;transition:opacity .15s}
 .pb-marker:hover::after{opacity:1}
+.pb-rally-band{position:absolute;top:-2px;height:10px;border-radius:3px;cursor:pointer;pointer-events:auto;z-index:0;transition:opacity .15s}
+.pb-rally-band:hover{opacity:.8}
+.pb-rally-band::after{content:attr(data-tip);position:absolute;bottom:14px;left:50%;transform:translateX(-50%);background:#222;color:#fff;font-size:8px;white-space:nowrap;padding:2px 6px;border-radius:3px;opacity:0;pointer-events:none;transition:opacity .15s}
+.pb-rally-band:hover::after{opacity:1}
 
 /* ---- Dual Video Preview (clip selection mode) ---- */
 .dual-preview{display:flex;gap:4px;width:100%;height:100%}
@@ -276,6 +300,49 @@ body{font-family:'Lato',sans-serif;background:var(--bg);color:var(--text);height
 .frame-step-btn{width:24px;height:20px;font-size:10px;line-height:18px;text-align:center;padding:0;border:1px solid rgba(255,255,255,.15);background:rgba(255,255,255,.06);color:var(--accent);border-radius:3px;cursor:pointer}
 .frame-step-btn:hover{background:rgba(255,255,255,.12)}
 .frame-step-btn:active{background:rgba(255,255,255,.18)}
+
+/* ---- Calibration Page ---- */
+.cal-layout{display:grid;grid-template-columns:1fr 1fr;grid-template-rows:auto 1fr auto auto;gap:12px;flex:1;min-height:0;padding:0}
+.cal-controls{grid-column:1/3;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.cal-controls select{background:var(--card-bg);color:var(--text);border:1px solid #555;border-radius:4px;padding:4px 8px;font-size:12px}
+.cal-controls button{background:var(--accent);color:#fff;border:none;border-radius:4px;padding:6px 16px;font-size:12px;cursor:pointer;font-weight:600}
+.cal-controls button:hover{opacity:.85}
+.cal-controls .cal-time-input{width:70px;background:var(--card-bg);color:var(--text);border:1px solid #555;border-radius:4px;padding:4px 8px;font-size:12px;text-align:center}
+.cal-img-panel{position:relative;background:#000;border-radius:6px;overflow:hidden;min-height:200px}
+.cal-img-panel img{width:100%;height:100%;object-fit:contain;display:block;transform-origin:0 0}
+.cal-img-panel canvas{position:absolute;top:0;left:0;width:100%;height:100%;cursor:crosshair}
+.cal-img-label{position:absolute;top:6px;left:8px;font-size:10px;font-weight:700;background:rgba(0,0,0,.65);color:#fff;padding:2px 10px;border-radius:3px;pointer-events:none;z-index:2}
+.cal-img-hint{position:absolute;bottom:6px;left:50%;transform:translateX(-50%);font-size:10px;background:rgba(0,0,0,.7);color:var(--accent);padding:2px 12px;border-radius:3px;pointer-events:none;z-index:2}
+.cal-zoom-indicator{position:absolute;bottom:6px;right:8px;font-size:10px;background:rgba(0,0,0,.75);color:#fff;padding:2px 8px;border-radius:3px;z-index:3;display:none;user-select:none}
+/* (live stats now use pg-stat-card classes from presentation grid) */
+.cal-zoom-indicator button{background:none;border:none;color:var(--accent);cursor:pointer;font-size:10px;margin-left:6px;padding:0}
+.cal-zoom-indicator button:hover{text-decoration:underline}
+.cal-points-panel{grid-column:1/3;background:var(--card-bg);border-radius:6px;padding:10px 14px;max-height:180px;overflow-y:auto}
+.cal-points-panel .section-title{margin-bottom:6px}
+.cal-points-table{width:100%;border-collapse:collapse;font-size:11px}
+.cal-points-table th{text-align:left;color:var(--text-muted);font-weight:600;padding:3px 8px;border-bottom:1px solid rgba(255,255,255,.1)}
+.cal-points-table td{padding:3px 8px}
+.cal-points-table tr:hover{background:rgba(255,255,255,.05)}
+.cal-del-btn{background:none;border:none;color:#f44336;cursor:pointer;font-size:14px;padding:0 4px}
+.cal-del-btn:hover{opacity:.7}
+.cal-actions{grid-column:1/3;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.cal-actions button{padding:8px 20px;font-size:13px;font-weight:600;border:none;border-radius:4px;cursor:pointer;color:#fff}
+.cal-actions .cal-run-btn{background:#4caf50}
+.cal-actions .cal-run-btn:hover{background:#43a047}
+.cal-actions .cal-run-btn:disabled{background:#555;cursor:not-allowed}
+.cal-actions .cal-apply-btn{background:var(--accent)}
+.cal-actions .cal-apply-btn:hover{opacity:.85}
+.cal-actions .cal-apply-btn:disabled{background:#555;cursor:not-allowed}
+.cal-actions .cal-export-btn{background:var(--card-bg);border:1px solid #555}
+.cal-actions .cal-export-btn:hover{background:#3a3a3a}
+.cal-status{font-size:11px;color:var(--text-muted);margin-left:auto}
+.cal-results{grid-column:1/3;background:var(--card-bg);border-radius:6px;padding:12px 14px;display:none}
+.cal-results.show{display:block}
+.cal-results .section-title{margin-bottom:8px}
+.cal-result-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.cal-result-item{font-size:12px}
+.cal-result-item .label{color:var(--text-muted);font-size:10px}
+.cal-result-item .value{font-weight:600;color:var(--accent)}
 </style>
 </head>
 <body>
@@ -294,6 +361,10 @@ body{font-family:'Lato',sans-serif;background:var(--bg);color:var(--text);height
       <div class="nav-item" data-page="video-test" onclick="switchPage('video-test')">
         <svg viewBox="0 0 24 24"><path d="M18 4l2 4h-3l-2-4h-2l2 4h-3l-2-4H8l2 4H7L5 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V4h-4z"/></svg>
         <span>Video Test</span>
+      </div>
+      <div class="nav-item" data-page="calibration" onclick="switchPage('calibration')">
+        <svg viewBox="0 0 24 24"><path d="M12 8c-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4-1.79-4-4-4zm-7 7H3v4c0 1.1.9 2 2 2h4v-2H5v-4zM5 5h4V3H5c-1.1 0-2 .9-2 2v4h2V5zm14-2h-4v2h4v4h2V5c0-1.1-.9-2-2-2zm0 16h-4v2h4c1.1 0 2-.9 2-2v-4h-2v4z"/></svg>
+        <span>Calibration</span>
       </div>
       <div class="nav-item" data-page="database">
         <svg viewBox="0 0 24 24"><path d="M12 3C7.58 3 4 4.79 4 7v10c0 2.21 3.58 4 8 4s8-1.79 8-4V7c0-2.21-3.58-4-8-4zm6 14c0 .5-2.13 2-6 2s-6-1.5-6-2v-2.23c1.61 1.07 3.71 1.73 6 1.73s4.39-.66 6-1.73V17zm0-5c0 .5-2.13 2-6 2s-6-1.5-6-2V9.77C7.61 10.84 9.71 11.5 12 11.5s4.39-.66 6-1.73V12zm-6-3C8.13 9 6 7.5 6 7s2.13-2 6-2 6 1.5 6 2-2.13 2-6 2z"/></svg>
@@ -591,22 +662,89 @@ body{font-family:'Lato',sans-serif;background:var(--bg);color:var(--text);height
               </div>
             </div>
           </div>
-          <!-- Processing mode: MJPEG stream player (hidden by default) -->
-          <div class="vt-player-area" id="vt-player-area" style="display:none">
-            <img id="vt-video" style="display:none" alt="Video preview">
-            <img id="vt-stream" style="display:none" alt="Processing stream">
-            <div class="vid-empty" id="vt-placeholder">Processing...</div>
-            <div class="video-bar" id="vt-video-bar" style="display:none">
-              <div class="video-bar-left">
-                <div class="tag">
-                  <svg viewBox="0 0 24 24"><path d="M18 4l2 4h-3l-2-4h-2l2 4h-3l-2-4H8l2 4H7L5 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V4h-4z"/></svg>
-                  <span id="vt-video-name">-</span>
+          <!-- Processing mode: real-time presentation grid (matches playback layout) -->
+          <div id="vt-player-area" style="display:none;flex:1;min-height:0;overflow:hidden;position:relative">
+            <div class="presentation-grid">
+              <!-- cam66 (top-left) -->
+              <div class="pg-cam" id="vt-pgcam-1" style="position:relative">
+                <div class="pg-cam-label" style="color:#4f88fa">cam66</div>
+                <img id="vt-live-cam1" alt="">
+                <canvas id="vt-overlay-cam1" class="vt-ball-overlay"></canvas>
+                <div class="vt-zoom-indicator" id="vt-zoom-ind-cam1"><span id="vt-zoom-txt-cam1">1.0x</span><button onclick="vtResetZoom('cam1')">Reset</button></div>
+              </div>
+              <!-- cam68 (top-right) -->
+              <div class="pg-cam" id="vt-pgcam-2" style="position:relative">
+                <div class="pg-cam-label" style="color:#fa4e4e">cam68</div>
+                <img id="vt-live-cam2" alt="">
+                <canvas id="vt-overlay-cam2" class="vt-ball-overlay"></canvas>
+                <div class="vt-zoom-indicator" id="vt-zoom-ind-cam2"><span id="vt-zoom-txt-cam2">1.0x</span><button onclick="vtResetZoom('cam2')">Reset</button></div>
+              </div>
+              <!-- Sidebar: minimap + stats (right, spans both rows) -->
+              <div class="pg-sidebar">
+                <div class="pg-minimap-wrap">
+                  <canvas id="vt-live-minimap2" width="268" height="460"></canvas>
+                </div>
+                <div class="pg-stats">
+                  <div class="pg-stat-card">
+                    <span class="pg-stat-label">Speed</span>
+                    <div><span id="vt-ls-speed" class="pg-stat-value">--</span><span class="pg-stat-unit">KM/H</span></div>
+                  </div>
+                  <div class="pg-stat-card">
+                    <span class="pg-stat-label">Position</span>
+                    <div><span id="vt-ls-position" class="pg-stat-value small">--</span></div>
+                  </div>
+                  <div class="pg-stat-card">
+                    <span class="pg-stat-label">Detections</span>
+                    <div><span id="vt-ls-detections" class="pg-stat-value small">0</span></div>
+                  </div>
+                  <div class="pg-stat-card">
+                    <span class="pg-stat-label">3D Matched</span>
+                    <div><span id="vt-ls-matched" class="pg-stat-value small" style="color:#4caf50">0</span></div>
+                  </div>
+                  <div class="pg-stat-card">
+                    <span class="pg-stat-label">Bounces</span>
+                    <div><span id="vt-ls-bounces" class="pg-stat-value small" style="color:#ff9800">0</span></div>
+                  </div>
+                  <div class="pg-stat-card">
+                    <span class="pg-stat-label">Rally</span>
+                    <div><span id="vt-ls-rallies" class="pg-stat-value small" style="color:#e040fb">--</span></div>
+                  </div>
                 </div>
               </div>
-              <div class="video-bar-right">
-                <div class="tag"><span id="vt-resolution">-</span></div>
-              </div>
+              <!-- 3D Map (bottom-left, spans 2 cols) — reuse existing Three.js scene -->
+              <div class="pg-3d" id="vt-live-3d-slot"></div>
             </div>
+          </div>
+          <!-- Live processing timeline (hidden by default) -->
+          <div class="playback-controls" id="vt-live-controls" style="display:none">
+            <div style="display:flex;align-items:center;gap:6px;padding:0 4px;width:100%">
+              <span style="font-size:9px;color:#888;white-space:nowrap" id="vt-live-time-label">0:00</span>
+              <div class="pb-timeline-wrap" style="flex:1">
+                <div class="pb-timeline-markers" id="vt-live-markers"></div>
+                <input type="range" class="pb-slider" id="vt-live-slider" min="0" max="1000" value="0" disabled
+                       style="opacity:0.6">
+              </div>
+              <span style="font-size:9px;color:#888;white-space:nowrap" id="vt-live-time-end">0:00</span>
+              <span style="font-size:9px;color:#4caf50;font-weight:700;white-space:nowrap" id="vt-live-frame-info">0 / 0</span>
+              <button class="vt-ball-toggle active" id="vt-ball-toggle" onclick="vtToggleBallOverlay()" title="Show/hide ball marker">&#9679; Ball</button>
+              <button class="vt-edit-toggle" id="vt-edit-toggle" onclick="vtToggleEditMode()" title="Edit annotations" style="display:none">&#9998; Edit</button>
+              <button class="vt-edit-toggle" id="vt-save-btn" onclick="vtEditSave()" title="Save annotations" style="display:none">&#128190; Save</button>
+            </div>
+          </div>
+          <!-- Edit mode toolbar -->
+          <div id="vt-edit-toolbar" class="vt-edit-toolbar" style="display:none">
+            <span class="vt-edit-mode-label">EDIT</span>
+            <button class="vt-edit-tool-btn active" data-tool="select" onclick="vtSetEditTool('select')">Select</button>
+            <button class="vt-edit-tool-btn" data-tool="add" onclick="vtSetEditTool('add')">+ Add</button>
+            <button class="vt-edit-tool-btn" data-tool="rally" onclick="vtSetEditTool('rally')">&#9654; Rally</button>
+            <div style="flex:1"></div>
+            <button class="btn-sm" onclick="vtEditStepFrame(-1)" title="Previous frame (←)" style="font-size:11px;padding:2px 6px">◀</button>
+            <span id="vt-edit-frame-label" style="color:#aaa;font-size:9px;min-width:40px;text-align:center"></span>
+            <button class="btn-sm" onclick="vtEditStepFrame(1)" title="Next frame (→)" style="font-size:11px;padding:2px 6px">▶</button>
+            <div style="width:8px"></div>
+            <span id="vt-edit-info" style="color:#888;font-size:9px"></span>
+            <button class="btn-sm btn-del" id="vt-edit-delete-btn" onclick="vtEditDeleteSelected()" disabled>Delete</button>
+            <button class="btn-sm btn-undo" onclick="vtEditUndo()">Undo</button>
           </div>
           <!-- Playback mode: presentation grid -->
           <div id="vt-playback-area" style="display:none;flex:1;min-height:0;overflow:hidden;position:relative">
@@ -640,11 +778,11 @@ body{font-family:'Lato',sans-serif;background:var(--bg);color:var(--text);height
                     <div><span id="pg-pos-val" class="pg-stat-value small">--</span></div>
                   </div>
                   <div class="pg-stat-card">
-                    <span class="pg-stat-label">Shot</span>
+                    <span class="pg-stat-label">Rally</span>
                     <div><span id="pg-shot-val" class="pg-stat-value small">--</span></div>
                   </div>
                   <div class="pg-stat-card">
-                    <span class="pg-stat-label">Bounces</span>
+                    <span class="pg-stat-label">Landing</span>
                     <div><span id="pg-bounce-val" class="pg-stat-value small">0</span></div>
                   </div>
                 </div>
@@ -683,10 +821,11 @@ body{font-family:'Lato',sans-serif;background:var(--bg);color:var(--text);height
         <!-- Right bottom: 3D Map + Detection table -->
         <div class="map3d-panel">
           <div class="det-split">
-            <!-- 3D visualization -->
+            <!-- 3D visualization / Live minimap -->
             <div class="det-map">
-              <div class="panel-title">3D Map</div>
+              <div class="panel-title" id="vt-map-title">3D Map</div>
               <div id="vt-3d-container" style="width:100%;height:calc(100% - 30px);overflow:hidden"></div>
+              <canvas id="vt-live-minimap" style="display:none;width:100%;height:calc(100% - 30px)"></canvas>
             </div>
             <!-- Detection table -->
             <div class="det-table-wrap">
@@ -699,9 +838,10 @@ body{font-family:'Lato',sans-serif;background:var(--bg);color:var(--text);height
                   <thead id="vt-det-thead">
                     <tr>
                       <th style="text-align:left">Frame</th>
-                      <th style="text-align:right">X</th>
-                      <th style="text-align:right">Y</th>
-                      <th style="text-align:right">Z</th>
+                      <th style="text-align:right;color:#4f88fa;font-size:9px">c66X</th>
+                      <th style="text-align:right;color:#4f88fa;font-size:9px">c66Y</th>
+                      <th style="text-align:right;color:#fa4e4e;font-size:9px">c68X</th>
+                      <th style="text-align:right;color:#fa4e4e;font-size:9px">c68Y</th>
                     </tr>
                   </thead>
                   <tbody id="vt-det-tbody"></tbody>
@@ -712,6 +852,68 @@ body{font-family:'Lato',sans-serif;background:var(--bg);color:var(--text);height
         </div>
       </div>
     </div><!-- /page-video-test -->
+
+    <!-- ==================== Calibration Page ==================== -->
+    <div id="page-calibration" class="page-content">
+      <div class="main-header"><h1>Camera Calibration</h1></div>
+      <div class="cal-layout">
+        <!-- Step 1: Controls -->
+        <div class="cal-controls">
+          <span style="font-size:12px;font-weight:600">cam66:</span>
+          <select id="cal-vid1"></select>
+          <span style="font-size:12px;font-weight:600">cam68:</span>
+          <select id="cal-vid2"></select>
+          <span style="font-size:12px;color:var(--text-muted)">Time:</span>
+          <input type="number" class="cal-time-input" id="cal-frame-time" value="1.0" step="0.5" min="0">
+          <button onclick="calLoadFrames()">Load Frames</button>
+          <span style="font-size:10px;color:var(--text-muted);margin-left:8px" id="cal-hint">Click matching ground-level points in both images</span>
+        </div>
+        <!-- Camera images with canvas overlay -->
+        <div class="cal-img-panel" id="cal-panel1">
+          <div class="cal-img-label" style="color:#4f88fa">Camera 66</div>
+          <img id="cal-img1" alt="cam66 frame" style="background:#181818">
+          <canvas id="cal-canvas1"></canvas>
+          <div class="cal-img-hint" id="cal-hint1">Load frame first</div>
+          <div class="cal-zoom-indicator" id="cal-zoom-ind1"><span id="cal-zoom-txt1">1.0x</span><button onclick="calResetZoom('cam66')">Reset</button></div>
+        </div>
+        <div class="cal-img-panel" id="cal-panel2">
+          <div class="cal-img-label" style="color:#fa4e4e">Camera 68</div>
+          <img id="cal-img2" alt="cam68 frame" style="background:#181818">
+          <canvas id="cal-canvas2"></canvas>
+          <div class="cal-img-hint" id="cal-hint2">Load frame first</div>
+          <div class="cal-zoom-indicator" id="cal-zoom-ind2"><span id="cal-zoom-txt2">1.0x</span><button onclick="calResetZoom('cam68')">Reset</button></div>
+        </div>
+        <!-- Marked points table -->
+        <div class="cal-points-panel">
+          <div class="section-title">Marked Point Pairs <span id="cal-pair-count" style="font-size:10px;color:var(--text-muted)">(0 pairs)</span></div>
+          <table class="cal-points-table">
+            <thead><tr><th>#</th><th>cam66 (px, py)</th><th>cam68 (px, py)</th><th></th></tr></thead>
+            <tbody id="cal-points-tbody"></tbody>
+          </table>
+        </div>
+        <!-- Action buttons -->
+        <div class="cal-actions">
+          <button class="cal-run-btn" id="cal-run-btn" onclick="calRunCalibration()" disabled>Run Calibration</button>
+          <button class="cal-apply-btn" id="cal-apply-btn" onclick="calApplyResults()" disabled>Apply to Config</button>
+          <button class="cal-export-btn" id="cal-export-btn" onclick="calExportJSON()" disabled>Export JSON</button>
+          <span class="cal-status" id="cal-status"></span>
+        </div>
+        <!-- Results panel -->
+        <div class="cal-results" id="cal-results">
+          <div class="section-title">Calibration Results</div>
+          <div class="cal-result-grid">
+            <div class="cal-result-item"><div class="label">cam66 Position</div><div class="value" id="cal-res-pos1">--</div></div>
+            <div class="cal-result-item"><div class="label">cam68 Position</div><div class="value" id="cal-res-pos2">--</div></div>
+            <div class="cal-result-item"><div class="label">Reprojection Error</div><div class="value" id="cal-res-error">--</div></div>
+            <div class="cal-result-item"><div class="label">Baseline Distance</div><div class="value" id="cal-res-baseline">--</div></div>
+          </div>
+          <div id="cal-z-validation" style="margin-top:10px;display:none">
+            <div class="section-title" style="color:#ff9800">Z Validation</div>
+            <div id="cal-z-info" style="font-size:11px;color:var(--text-muted)"></div>
+          </div>
+        </div>
+      </div>
+    </div><!-- /page-calibration -->
 
   </div>
 </div>
@@ -1086,13 +1288,17 @@ let _vtViewRanges={1:{start:0,end:1,duration:0,fps:25,configured:false,filename:
 // Dual slider drag state: {view:1|2, handle:'start'|'end'} or null
 let _vtDraggingView=null;
 
-// Playback state
+// Playback state — now time-based (continuous video, not detection-index-based)
 let _vtPlaybackMode=false;
-let _vtPlaybackIdx=0;
 let _vtPlaybackTimer=null;
 let _vtPlaybackSpeed=1;
 let _vtPlaybackPlaying=false;
 let _vt3dOriginalParent=null;
+// Time-based playback state
+let _vtPlaybackTimeStart=0;    // clip start time (seconds) in video timeline
+let _vtPlaybackTimeEnd=0;      // clip end time (seconds) in video timeline
+let _vtPlaybackTimeCurrent=0;  // current playback time (seconds)
+let _vtPlaybackFPS=30;         // video frame rate for stepping
 
 // ---- Rally selector & stats helpers ----
 
@@ -1312,7 +1518,10 @@ function vtSwitchRally(index){
   if(_vtTrajectory) vtDrawTrajectoryCurve(_vtTrajectory);
   vtRender3DTable();
   vtRenderRallySelector();
-  if(_vtPlaybackMode&&_vtPlaybackIdx>=0) vtRenderPlaybackFrame(_vtPlaybackIdx);
+  if(_vtPlaybackMode){
+    vtBuildTimelineMarkers();
+    vtRenderPlaybackFrameAtTime(_vtPlaybackTimeCurrent);
+  }
   // Update stats label
   const msg=vtBuildStatsSummary({n_rallies:_vtRallies.length,rally_sizes:_vtRallies.map(r=>r.points.length)});
   document.getElementById('vt-phase-label').textContent=msg;
@@ -1967,15 +2176,11 @@ async function vtToggleRun(){
       });
       const d=await r.json();
       if(d.status!=='started'){vtStopUI();return}
+      // Start live SSE detection stream
+      vtStartLiveSSE();
     }catch(e){console.error(e);vtStopUI();return}
 
-    // Hide MJPEG stream, show progress placeholder
-    const video=document.getElementById('vt-video');
-    const stream=document.getElementById('vt-stream');
-    const placeholder=document.getElementById('vt-placeholder');
-    video.style.display='none';stream.src='';stream.style.display='none';
-    placeholder.style.display='flex';
-    placeholder.textContent='Processing both cameras in parallel...';
+    // (dual MJPEG streams already started by vtStartUI)
 
     // Poll combined status until complete
     await new Promise((resolve)=>{
@@ -1994,7 +2199,6 @@ async function vtToggleRun(){
           badge.className='state-badge '+d.state;badge.textContent=d.state;
           if(d.state==='completed'||d.state==='error'){
             clearInterval(poll);
-            placeholder.style.display='none';
             resolve(d.state==='completed');
           }
         }catch(e){console.error(e)}
@@ -2003,7 +2207,14 @@ async function vtToggleRun(){
   }
   if(!_vtRunning) return;
 
-  // Phase 2: Compute trajectory (auto offset + spatial parabola fit)
+  // Stop live SSE (processing done)
+  vtStopLiveSSE();
+
+  /* --- Phase 2: Post-processing DISABLED (temporarily) ---
+   * The real-time SSE already provides live 3D trajectory + bounce/rally analytics.
+   * Re-computing via /api/video-test/compute-trajectory is redundant and slow.
+   * To re-enable: uncomment this block.
+   *
   _vtPhase='3d';
   document.getElementById('vt-phase-label').textContent='Computing 3D trajectory (auto-sync)...';
   let stats={};
@@ -2017,45 +2228,49 @@ async function vtToggleRun(){
       _vtTrajectory=trajResult.trajectory||null;
       _vtRallies=trajResult.rallies||[];
       _vtCurrentRally=-1;
-      // Extract batch analytics (bounce detection & rally tracking)
       const batchAnalytics=trajResult.analytics||{};
       _vtBatchBounces=batchAnalytics.bounces||[];
-      console.log('Trajectory stats:',JSON.stringify(stats,null,2));
-      console.log('Rallies:',_vtRallies.length);
-      console.log('Batch analytics:',_vtBatchBounces.length,'bounces');
     } else {
-      console.warn('Trajectory failed, falling back to compute-3d');
       const r2=await fetch('/api/video-test/compute-3d',{method:'POST'});
       const data=await r2.json();
       _vt3dPoints=data.points||[];
       stats=data.stats||{};
-      _vtTrajectory=null;
-      _vtRallies=[];
     }
   }catch(e){console.error(e)}
-
-  // Update 3D visualization and table
   vtUpdate3DBalls(_vt3dPoints);
   if(_vtTrajectory) vtDrawTrajectoryCurve(_vtTrajectory);
   vtRender3DTable();
   vtRenderRallySelector();
+  */
 
-  // Done
+  // Done — stay in live view with real-time results
   _vtPhase='done';
-  vtStopUI();
-  document.getElementById('vt-progress').style.display='block';
+  _vtRunning=false;
   document.getElementById('vt-state-badge').className='state-badge completed';
   document.getElementById('vt-state-badge').textContent='completed';
-  // Show stats summary with speed / landing / rally info
-  let statMsg=vtBuildStatsSummary(stats);
+  document.getElementById('vt-phase-label').textContent='Processing complete — '+_vtLiveMatches.length+' detections, '+_vtLiveBounces.length+' bounces';
 
-  // Auto-enter playback mode if we have 3D results, otherwise return to dual preview
-  if(_vt3dPoints.length>0){
-    vtEnterPlayback();
-  } else {
-    document.getElementById('vt-dual-preview').style.display='flex';
-    document.getElementById('vt-player-area').style.display='none';
-  }
+  // Reset button to "Run Test" but keep live view visible
+  const btn=document.getElementById('vt-run-btn');
+  btn.classList.remove('stop');
+  document.getElementById('vt-run-text').textContent='Run Test';
+  btn.querySelector('svg').innerHTML='<path d="M8 5v14l11-7z"/>';
+
+  // Stop MJPEG streams (processing is done, no need to keep streaming)
+  const cam1=document.getElementById('vt-live-cam1');
+  const cam2=document.getElementById('vt-live-cam2');
+  if(cam1) cam1.src='';
+  if(cam2) cam2.src='';
+
+  // Keep live view (player-area, live-controls, 3D, minimap) visible for review
+  // Enable timeline slider for scrubbing through results
+  const slider=document.getElementById('vt-live-slider');
+  if(slider){ slider.disabled=false; slider.style.opacity='1'; }
+  // Show edit/save buttons
+  const editBtn=document.getElementById('vt-edit-toggle');
+  const saveBtn=document.getElementById('vt-save-btn');
+  if(editBtn) editBtn.style.display='';
+  if(saveBtn) saveBtn.style.display='';
 }
 
 function vtRunSingleVideo(filename,camera,range){
@@ -2073,14 +2288,13 @@ function vtRunSingleVideo(filename,camera,range){
       if(d.status!=='started'){resolve(false);return}
     }catch(e){console.error(e);resolve(false);return}
 
-    // Show MJPEG stream
+    // Show MJPEG stream (legacy single-camera mode)
     const video=document.getElementById('vt-video');
     const stream=document.getElementById('vt-stream');
     const placeholder=document.getElementById('vt-placeholder');
-    video.style.display='none';
-    placeholder.style.display='none';
-    stream.src='/api/camera/_video_test/stream';
-    stream.style.display='block';
+    if(video) video.style.display='none';
+    if(placeholder) placeholder.style.display='none';
+    if(stream){ stream.src='/api/camera/_video_test/stream'; stream.style.display='block'; }
 
     // Poll status until complete
     const poll=setInterval(async()=>{
@@ -2120,26 +2334,1414 @@ function vtStartUI(){
   btn.querySelector('svg').innerHTML='<rect x="6" y="6" width="12" height="12"/>';
   document.getElementById('vt-progress').style.display='block';
 
-  // Hide dual preview, show MJPEG player area
+  // Hide dual preview, show real-time processing view
   document.getElementById('vt-dual-preview').style.display='none';
-  document.getElementById('vt-player-area').style.display='';
+  document.getElementById('vt-player-area').style.display='flex';
   document.getElementById('vt-playback-area').style.display='none';
   document.getElementById('vt-playback-controls').style.display='none';
-  document.getElementById('vt-placeholder').style.display='flex';
-  document.getElementById('vt-placeholder').textContent='Processing...';
-  document.getElementById('vt-video').style.display='none';
+  document.getElementById('vt-live-controls').style.display='flex';
+
+  // Start MJPEG streams for both cameras
+  const cam1=document.getElementById('vt-live-cam1');
+  const cam2=document.getElementById('vt-live-cam2');
+  if(cam1) cam1.src='/api/camera/_video_test_cam66/stream';
+  if(cam2) cam2.src='/api/camera/_video_test_cam68/stream';
+
+  // Move 3D scene into the live processing slot
+  const container3d=document.getElementById('vt-3d-container');
+  const liveSlot=document.getElementById('vt-live-3d-slot');
+  if(container3d && liveSlot){
+    _vtLive3dOrigParent=container3d.parentElement;
+    liveSlot.appendChild(container3d);
+    container3d.style.width='100%';
+    container3d.style.height='100%';
+    // Trigger resize so Three.js re-renders at new size
+    if(typeof vtInit3D==='function' && !window._vt3dScene) vtInit3D();
+    window.dispatchEvent(new Event('resize'));
+  }
+
+  // Clear 3D balls for fresh start
+  vtUpdate3DBalls([]);
+
+  // Reset live analytics state
+  _vtLiveBounces=[];
+  _vtLiveRallies=[];
+  _vtLiveLastSide=null;
+  _vtLiveLastSpeed=0;
+  _vtLiveAnalyticsIdx=2;
 }
 
 function vtStopUI(){
   _vtRunning=false;
+  vtStopLiveSSE(); // close SSE if still open
   const btn=document.getElementById('vt-run-btn');
   btn.classList.remove('stop');
   document.getElementById('vt-run-text').textContent='Run Test';
   btn.querySelector('svg').innerHTML='<path d="M8 5v14l11-7z"/>';
 
-  const stream=document.getElementById('vt-stream');
-  stream.src='';
-  stream.style.display='none';
+  // Stop MJPEG streams
+  const cam1=document.getElementById('vt-live-cam1');
+  const cam2=document.getElementById('vt-live-cam2');
+  if(cam1) cam1.src='';
+  if(cam2) cam2.src='';
+
+  // Move 3D scene back to original parent
+  const container3d=document.getElementById('vt-3d-container');
+  if(container3d && _vtLive3dOrigParent){
+    _vtLive3dOrigParent.appendChild(container3d);
+    container3d.style.width='100%';
+    container3d.style.height='calc(100% - 30px)';
+    window.dispatchEvent(new Event('resize'));
+    _vtLive3dOrigParent=null;
+  }
+
+  // Hide live timeline
+  const lc=document.getElementById('vt-live-controls');
+  if(lc) lc.style.display='none';
+}
+
+// ---- Live SSE Detection Streaming (dual-camera real-time) ----
+let _vtLiveSSE=null;
+let _vtLiveDetections={};  // cam_name -> [detections]
+let _vtLiveMatches=[];     // [{frame_index, cam66:{x,y,...}, cam68:{x,y,...}, avgX, avgY}]
+let _vtLiveLastUpdate=0;
+const COURT_W_LIVE=8.23, COURT_L_LIVE=23.77, NET_Y_LIVE=11.885;
+const SINGLES_LEFT=1.37, SINGLES_RIGHT=6.86; // singles sidelines (8.23 - 2*1.37)
+
+// Incremental analytics state
+let _vtLiveBounces=[];     // [{idx, x, y, type}] — detected bounce events
+let _vtLiveRallies=[];     // [{startIdx, endIdx, startFrame, endFrame}]
+let _vtLiveLastSide=null;  // 'near'|'far' — last known side of net
+let _vtLiveLastSpeed=0;    // km/h
+let _vtLiveAnalyticsIdx=2; // next index to check for bounces (need i-1, i, i+1)
+let _vtLive3dOrigParent=null; // original parent of 3D container before moving to live slot
+
+// ---- Incremental real-time analytics ----
+function vtLiveAnalytics(){
+  // Runs after each match update; scans ALL new matched points for bounces, rallies, speed
+  const M=_vtLiveMatches;
+  if(M.length<3) return;
+
+  // 1) Speed: from last two matched points (meters / frame-time → km/h)
+  const last=M[M.length-1], prev=M[M.length-2];
+  const fps=_vtViewRanges[1].fps||25;
+  const dFrames=Math.max(1,last.frame_index-prev.frame_index);
+  const dt=dFrames/fps;
+  const dx=last.avgX-prev.avgX, dy=last.avgY-prev.avgY;
+  const dist=Math.sqrt(dx*dx+dy*dy);
+  const speed=(dist/dt)*3.6; // m/s → km/h
+  _vtLiveLastSpeed=speed>300?_vtLiveLastSpeed:speed; // ignore outliers
+
+  // 2) Bounce detection: scan all unprocessed indices for Y direction reversals
+  const scanEnd=M.length-1; // need i+1 to exist
+  for(let i=Math.max(1,_vtLiveAnalyticsIdx); i<scanEnd; i++){
+    const yBefore=M[i-1].avgY, yAt=M[i].avgY, yAfter=M[i+1].avgY;
+    const dyBefore=yAt-yBefore;
+    const dyAfter=yAfter-yAt;
+    // Direction reversal = sign change in Y movement
+    if(dyBefore*dyAfter<0 && Math.abs(dyBefore)>0.15 && Math.abs(dyAfter)>0.15){
+      const alreadyDetected=_vtLiveBounces.some(b=>Math.abs(b.idx-i)<3);
+      if(!alreadyDetected){
+        // Singles court: sidelines at 1.37m and 6.86m, baselines at 0 and 23.77m
+        const bx=M[i].avgX;
+        const inCourt=bx>=SINGLES_LEFT && bx<=SINGLES_RIGHT && yAt>=0 && yAt<=COURT_L_LIVE;
+        _vtLiveBounces.push({
+          idx:i, frame:M[i].frame_index,
+          x:M[i].avgX, y:yAt,
+          type:inCourt?'IN':'OUT'
+        });
+      }
+    }
+
+    // 3) Rally detection: net crossings at each step
+    const side=M[i].avgY<NET_Y_LIVE?'near':'far';
+    if(_vtLiveLastSide && side!==_vtLiveLastSide){
+      if(_vtLiveRallies.length===0){
+        _vtLiveRallies.push({startIdx:0, endIdx:i, startFrame:M[0].frame_index, endFrame:M[i].frame_index, strokes:1});
+      } else {
+        const cur=_vtLiveRallies[_vtLiveRallies.length-1];
+        cur.strokes=(cur.strokes||0)+1;
+        cur.endIdx=i;
+        cur.endFrame=M[i].frame_index;
+      }
+    }
+    _vtLiveLastSide=side;
+  }
+  _vtLiveAnalyticsIdx=Math.max(_vtLiveAnalyticsIdx, scanEnd);
+
+  // Start first rally if enough points but no net crossing yet
+  if(_vtLiveRallies.length===0 && M.length>10){
+    _vtLiveRallies.push({startIdx:0, endIdx:M.length-1, startFrame:M[0].frame_index, endFrame:last.frame_index, strokes:0});
+  }
+  // Always update current rally end
+  if(_vtLiveRallies.length>0){
+    const cur=_vtLiveRallies[_vtLiveRallies.length-1];
+    cur.endIdx=M.length-1;
+    cur.endFrame=last.frame_index;
+  }
+}
+
+// Compute frame-matched pairs between the two cameras
+function vtComputeLiveMatches(){
+  const cams=Object.keys(_vtLiveDetections);
+  if(cams.length<2) return [];
+  // Build frame_index maps for both cameras
+  const maps={};
+  cams.forEach(cam=>{
+    const m={};
+    (_vtLiveDetections[cam]||[]).forEach(d=>{
+      if(d.frame_index!==undefined) m[d.frame_index]=d;
+    });
+    maps[cam]=m;
+  });
+  const cam1=cams[0], cam2=cams[1];
+  const map1=maps[cam1], map2=maps[cam2];
+  const common=Object.keys(map1).filter(f=>map2[f]!==undefined).map(Number).sort((a,b)=>a-b);
+  return common.map(fi=>{
+    const d1=map1[fi], d2=map2[fi];
+    return {
+      frame_index:fi,
+      cam1:d1, cam2:d2,
+      cam1Name:cam1, cam2Name:cam2,
+      // Average world position from both homographies
+      avgX:(d1.x+d2.x)/2,
+      avgY:(d1.y+d2.y)/2
+    };
+  });
+}
+
+function vtStartLiveSSE(){
+  _vtLiveDetections={};
+  _vtLiveMatches=[];
+  _vtLiveLastUpdate=0;
+  _vtLiveBounces=[];
+  _vtLiveRallies=[];
+  _vtLiveLastSide=null;
+  _vtLiveLastSpeed=0;
+  _vtLiveAnalyticsIdx=2;
+  // Hide bottom 3D scene during live mode
+  const minimap=document.getElementById('vt-live-minimap');
+  const container=document.getElementById('vt-3d-container');
+  const title=document.getElementById('vt-map-title');
+  if(minimap){
+    minimap.style.display='block';
+    const parent=minimap.parentElement;
+    minimap.width=parent.clientWidth;
+    minimap.height=parent.clientHeight-30;
+    vtDrawLiveMinimap();
+  }
+  if(container) container.style.display='none';
+  if(title) title.textContent='Live Results (dual camera)';
+  // Update detection table header for matched 3D results
+  const thead=document.getElementById('vt-det-thead');
+  if(thead) thead.innerHTML='<tr><th style="text-align:left">Frame</th><th style="text-align:right;color:#4f88fa;font-size:9px">c66X</th><th style="text-align:right;color:#4f88fa;font-size:9px">c66Y</th><th style="text-align:right;color:#fa4e4e;font-size:9px">c68X</th><th style="text-align:right;color:#fa4e4e;font-size:9px">c68Y</th></tr>';
+  const tbody=document.getElementById('vt-det-tbody');
+  if(tbody) tbody.innerHTML='';
+  document.getElementById('vt-det-count').textContent='waiting...';
+
+  // Connect SSE
+  try{
+    _vtLiveSSE=new EventSource('/api/video-test/detections/stream');
+    _vtLiveSSE.onmessage=function(e){
+      const data=JSON.parse(e.data);
+      if(data.done){
+        vtStopLiveSSE();
+        return;
+      }
+      for(const [cam,dets] of Object.entries(data)){
+        if(!_vtLiveDetections[cam]) _vtLiveDetections[cam]=[];
+        _vtLiveDetections[cam]=_vtLiveDetections[cam].concat(dets);
+      }
+      vtLiveUpdateUI();
+    };
+    _vtLiveSSE.onerror=function(){
+      vtStopLiveSSE();
+    };
+  }catch(e){
+    console.warn('Live SSE failed to connect:',e);
+  }
+}
+
+function vtStopLiveSSE(){
+  if(_vtLiveSSE){
+    _vtLiveSSE.close();
+    _vtLiveSSE=null;
+  }
+  const minimap=document.getElementById('vt-live-minimap');
+  const container=document.getElementById('vt-3d-container');
+  const title=document.getElementById('vt-map-title');
+  if(minimap) minimap.style.display='none';
+  if(container) container.style.display='';
+  if(title) title.textContent='3D Map';
+}
+
+function vtRebuildDetTable(){
+  const tbody=document.getElementById('vt-det-tbody');
+  if(!tbody||!_vtLiveMatches.length) return;
+  const startIdx=Math.max(0,_vtLiveMatches.length-30);
+  const recent=_vtLiveMatches.slice(startIdx).reverse();
+  tbody.innerHTML=recent.map((m,ri)=>{
+    const mi=_vtLiveMatches.length-1-ri;
+    const edit=_vtEditState.matchEdits[mi];
+    if(edit?.action==='deleted') return '';
+    const isActive=(_vtLiveScrubFrame>=0&&m.frame_index===_vtLiveScrubFrame)?' class="active"':'';
+    const isMod=edit?.action==='modified';
+    const c1x=(isMod&&edit.cam1)?edit.cam1.pixel_x:m.cam1?.pixel_x;
+    const c1y=(isMod&&edit.cam1)?edit.cam1.pixel_y:m.cam1?.pixel_y;
+    const c2x=(isMod&&edit.cam2)?edit.cam2.pixel_x:m.cam2?.pixel_x;
+    const c2y=(isMod&&edit.cam2)?edit.cam2.pixel_y:m.cam2?.pixel_y;
+    const modStyle=isMod?'color:#ff9800':'';
+    return `<tr${isActive} onclick="vtTableRowClick(${m.frame_index},this)">
+      <td style="text-align:left">${m.frame_index}</td>
+      <td style="text-align:right;color:#4f88fa;font-size:10px;${modStyle}">${c1x!=null?Math.round(c1x):'--'}</td>
+      <td style="text-align:right;color:#4f88fa;font-size:10px;${modStyle}">${c1y!=null?Math.round(c1y):'--'}</td>
+      <td style="text-align:right;color:#fa4e4e;font-size:10px;${modStyle}">${c2x!=null?Math.round(c2x):'--'}</td>
+      <td style="text-align:right;color:#fa4e4e;font-size:10px;${modStyle}">${c2y!=null?Math.round(c2y):'--'}</td>
+    </tr>`;
+  }).join('');
+}
+
+function vtLiveUpdateUI(){
+  const now=Date.now();
+  if(now-_vtLiveLastUpdate<300) return; // throttle to ~3Hz
+  _vtLiveLastUpdate=now;
+
+  // Compute frame-matched 3D pairs
+  _vtLiveMatches=vtComputeLiveMatches();
+
+  // Run incremental analytics (bounce/rally/speed)
+  vtLiveAnalytics();
+
+  // Count per-camera + matched pairs
+  const countParts=[];
+  let totalDets=0;
+  for(const [cam,dets] of Object.entries(_vtLiveDetections)){
+    const color=cam.includes('66')?'#4f88fa':'#fa4e4e';
+    countParts.push('<span style="color:'+color+'">'+cam.replace('cam','')+':'+dets.length+'</span>');
+    totalDets+=dets.length;
+  }
+  countParts.push('<span style="color:#4caf50;font-weight:700">3D:'+_vtLiveMatches.length+'</span>');
+  document.getElementById('vt-det-count').innerHTML=countParts.join(' | ');
+
+  // Update live stats sidebar (pg-stat style)
+  const sSpeed=document.getElementById('vt-ls-speed');
+  const sPos=document.getElementById('vt-ls-position');
+  const sDets=document.getElementById('vt-ls-detections');
+  const sMatched=document.getElementById('vt-ls-matched');
+  const sBounces=document.getElementById('vt-ls-bounces');
+  const sRallies=document.getElementById('vt-ls-rallies');
+  if(sSpeed) sSpeed.textContent=_vtLiveLastSpeed>0.5?_vtLiveLastSpeed.toFixed(0):'--';
+  if(sDets) sDets.textContent=totalDets;
+  if(sMatched) sMatched.textContent=_vtLiveMatches.length;
+  if(sBounces) sBounces.textContent=_vtLiveBounces.length;
+  if(sRallies){
+    const strokes=_vtLiveRallies.length>0?(_vtLiveRallies[_vtLiveRallies.length-1].strokes||0):0;
+    sRallies.textContent=strokes+' strokes';
+  }
+  if(sPos && _vtLiveMatches.length>0){
+    const last=_vtLiveMatches[_vtLiveMatches.length-1];
+    sPos.textContent='('+last.avgX.toFixed(1)+', '+last.avgY.toFixed(1)+')';
+  }
+
+  // Update 3D map: show trajectory with height estimated from camera disagreement
+  // When ball is on ground, both homographies agree; when elevated, they diverge
+  // Use adaptive percentile-based scaling for realistic Z (0–5m)
+  if(_vtLiveMatches.length>0){
+    // Compute all disagreements
+    const disags=_vtLiveMatches.map(m=>{
+      const dx=m.cam1.x-m.cam2.x, dy=m.cam1.y-m.cam2.y;
+      return Math.sqrt(dx*dx+dy*dy);
+    });
+    // Sort a copy for percentiles
+    const sorted=[...disags].sort((a,b)=>a-b);
+    const p5=sorted[Math.floor(sorted.length*0.05)]||0;   // ground baseline
+    const p95=sorted[Math.floor(sorted.length*0.95)]||1;   // high point reference
+    const range=Math.max(0.5, p95-p5); // avoid div-by-zero
+    const pts3d=_vtLiveMatches.map((m,i)=>{
+      // Normalize: baseline → 0, p95 → ~4m, clamp 0–6m
+      const z=Math.max(0, Math.min(6, ((disags[i]-p5)/range)*4));
+      return {x:m.avgX, y:m.avgY, z:z, frame_index:m.frame_index};
+    });
+    vtUpdate3DBalls(pts3d, pts3d.length-1);
+  }
+
+  // Update live timeline slider
+  const fps=_vtViewRanges[1].fps||25;
+  if(_vtLiveMatches.length>0){
+    const lastFrame=_vtLiveMatches[_vtLiveMatches.length-1].frame_index;
+    const slider=document.getElementById('vt-live-slider');
+    if(slider){ slider.max=lastFrame; slider.value=lastFrame; }
+    const timeSec=lastFrame/fps;
+    const tl=document.getElementById('vt-live-time-label');
+    const te=document.getElementById('vt-live-time-end');
+    const fi=document.getElementById('vt-live-frame-info');
+    if(tl) tl.textContent=vtFormatTime(0);
+    if(te) te.textContent=vtFormatTime(timeSec);
+    if(fi) fi.textContent=_vtLiveMatches.length+' pts | f'+lastFrame;
+  }
+
+  // Update live timeline bounce markers
+  vtLiveBuildMarkers();
+
+  // Update detection table
+  vtRebuildDetTable();
+
+  vtDrawLiveMinimap();
+
+  // Draw ball overlay on camera frames (real-time)
+  vtDrawBallOverlays(null);
+}
+
+function vtLiveBuildMarkers(){
+  const container=document.getElementById('vt-live-markers');
+  if(!container) return;
+  const slider=document.getElementById('vt-live-slider');
+  if(!slider) return;
+  const maxFrame=parseInt(slider.max)||1;
+  container.innerHTML='';
+  // Bounce markers on timeline
+  _vtLiveBounces.forEach((b,i)=>{
+    const edit=_vtEditMode?_vtEditState.bounceEdits[i]:null;
+    if(edit&&edit.action==='deleted') return; // skip deleted
+    const pct=(b.frame/maxFrame)*100;
+    let color=b.type==='IN'?'#4caf50':'#f44336';
+    let opacity='0.8';
+    if(edit&&edit.action==='toggled'){color=edit.newType==='IN'?'#4caf50':'#f44336';}
+    const el=document.createElement('div');
+    el.style.cssText='position:absolute;left:'+pct+'%;top:0;bottom:0;width:3px;background:'+color+';border-radius:1px;opacity:'+opacity+';transform:translateX(-50%);cursor:pointer';
+    el.title='B'+(i+1)+' '+(edit?.action==='toggled'?edit.newType:b.type)+' (f'+b.frame+')';
+    // Click to toggle/select in edit mode
+    if(_vtEditMode){
+      el.style.pointerEvents='auto';
+      el.style.zIndex='5';
+      el.addEventListener('click',function(e){
+        e.stopPropagation();
+        vtEditToggleBounce(i);
+      });
+    }
+    container.appendChild(el);
+  });
+
+  // Rally boundary markers (purple) — edit mode
+  if(_vtEditMode){
+    _vtEditState.rallyMarkers.forEach((r,i)=>{
+      const pct=(r.frame/maxFrame)*100;
+      const el=document.createElement('div');
+      el.style.cssText='position:absolute;left:'+pct+'%;top:0;bottom:0;width:4px;background:#e040fb;border-radius:1px;opacity:0.9;transform:translateX(-50%);cursor:pointer;z-index:5';
+      el.title='Rally start (f'+r.frame+')';
+      el.addEventListener('click',function(e){
+        e.stopPropagation();
+        _vtEditState.selected={type:'rally',index:i};
+        document.getElementById('vt-edit-delete-btn').disabled=false;
+        document.getElementById('vt-edit-info').textContent='Selected rally marker at f'+r.frame;
+      });
+      container.appendChild(el);
+    });
+  }
+}
+
+// ---- Ball overlay toggle ----
+let _vtShowBallOverlay=true;
+
+function vtToggleBallOverlay(){
+  _vtShowBallOverlay=!_vtShowBallOverlay;
+  const btn=document.getElementById('vt-ball-toggle');
+  if(btn) btn.classList.toggle('active',_vtShowBallOverlay);
+  // Redraw or clear overlays
+  if(_vtShowBallOverlay){
+    vtDrawBallOverlays(_vtLiveScrubFrame>=0?_vtLiveScrubFrame:null);
+  } else {
+    vtClearBallOverlays();
+  }
+}
+
+function vtClearBallOverlays(){
+  ['vt-overlay-cam1','vt-overlay-cam2'].forEach(id=>{
+    const c=document.getElementById(id);
+    if(c) c.getContext('2d').clearRect(0,0,c.width,c.height);
+  });
+}
+
+function vtDrawBallOverlays(frameOrNull){
+  if(!_vtShowBallOverlay&&!_vtEditMode){ vtClearBallOverlays(); return; }
+  const M=_vtLiveMatches;
+  if(!M.length&&!_vtEditState.addedDetections.length) return;
+
+  const frame=frameOrNull!==null?frameOrNull:(M.length?M[M.length-1].frame_index:0);
+
+  // Find the current match index near this frame
+  let matchIdx=-1;
+  for(let i=M.length-1;i>=0;i--){
+    if(M[i].frame_index<=frame){matchIdx=i;break;}
+  }
+
+  // Prepare canvas contexts
+  const pairs=[
+    {canvasId:'vt-overlay-cam1',imgId:'vt-live-cam1',camKey:'cam1'},
+    {canvasId:'vt-overlay-cam2',imgId:'vt-live-cam2',camKey:'cam2'}
+  ];
+
+  pairs.forEach(({canvasId,imgId,camKey})=>{
+    const canvas=document.getElementById(canvasId);
+    const img=document.getElementById(imgId);
+    if(!canvas||!img) return;
+    // Use clientWidth/clientHeight (unaffected by CSS transform) for zoom compatibility
+    const dw=img.clientWidth,dh=img.clientHeight;
+    if(dw<10||dh<10) return;
+    canvas.width=dw;canvas.height=dh;
+    const ctx=canvas.getContext('2d');
+    ctx.clearRect(0,0,dw,dh);
+    const natW=img.naturalWidth||1920,natH=img.naturalHeight||1080;
+    const sx=dw/natW,sy=dh/natH;
+    const r=Math.max(8,Math.min(dw,dh)*0.018);
+
+    // Draw current match (green circle — normal, orange — modified, red X — deleted)
+    if(matchIdx>=0){
+      const m=M[matchIdx];
+      const edit=_vtEditMode?_vtEditState.matchEdits[matchIdx]:null;
+      const cam=m[camKey];
+      // Use modified pixel position if available
+      let px=cam?.pixel_x,py=cam?.pixel_y;
+      const isModified=edit&&edit.action==='modified'&&edit[camKey];
+      if(isModified){px=edit[camKey].pixel_x;py=edit[camKey].pixel_y;}
+      if(px!=null&&py!=null){
+        const cx=px*sx,cy=py*sy;
+        if(edit&&edit.action==='deleted'){
+          // Red X for deleted
+          ctx.strokeStyle='#f44336';ctx.lineWidth=2.5;
+          ctx.beginPath();ctx.moveTo(cx-r,cy-r);ctx.lineTo(cx+r,cy+r);ctx.stroke();
+          ctx.beginPath();ctx.moveTo(cx+r,cy-r);ctx.lineTo(cx-r,cy+r);ctx.stroke();
+        } else {
+          // Circle color: orange for modified, green for original
+          const color=isModified?'#ff9800':'#4caf50';
+          const glowRgba=isModified?'rgba(255,152,0,':'rgba(76,175,80,';
+          const grd=ctx.createRadialGradient(cx,cy,r*0.5,cx,cy,r*2.5);
+          grd.addColorStop(0,glowRgba+'0.35)');grd.addColorStop(1,glowRgba+'0)');
+          ctx.fillStyle=grd;ctx.beginPath();ctx.arc(cx,cy,r*2.5,0,Math.PI*2);ctx.fill();
+          ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);
+          ctx.strokeStyle=color;ctx.lineWidth=2.5;ctx.stroke();
+          ctx.beginPath();ctx.arc(cx,cy,2.5,0,Math.PI*2);
+          ctx.fillStyle=color;ctx.fill();
+          // Show original position as ghost if modified
+          if(isModified&&cam&&cam.pixel_x){
+            const ox=cam.pixel_x*sx,oy=cam.pixel_y*sy;
+            ctx.setLineDash([3,3]);
+            ctx.beginPath();ctx.arc(ox,oy,r*0.7,0,Math.PI*2);
+            ctx.strokeStyle='rgba(255,255,255,0.3)';ctx.lineWidth=1.5;ctx.stroke();
+            ctx.setLineDash([]);
+            // Line from original to new position
+            ctx.beginPath();ctx.moveTo(ox,oy);ctx.lineTo(cx,cy);
+            ctx.strokeStyle='rgba(255,152,0,0.4)';ctx.lineWidth=1;ctx.stroke();
+          }
+          // Blue selection ring
+          if(_vtEditMode&&_vtEditState.selected&&_vtEditState.selected.type==='match'&&_vtEditState.selected.index===matchIdx){
+            ctx.beginPath();ctx.arc(cx,cy,r+5,0,Math.PI*2);
+            ctx.strokeStyle='#42a5f5';ctx.lineWidth=3;ctx.stroke();
+          }
+        }
+      }
+    }
+
+    // Draw added detections (yellow circles) in edit mode
+    if(_vtEditMode){
+      _vtEditState.addedDetections.forEach((a,ai)=>{
+        if(Math.abs(a.frame_index-frame)>2) return;
+        const cam=a[camKey];
+        if(!cam||!cam.pixel_x) return;
+        const cx=cam.pixel_x*sx,cy=cam.pixel_y*sy;
+        // Yellow circle
+        ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);
+        ctx.strokeStyle='#ffeb3b';ctx.lineWidth=2.5;ctx.stroke();
+        ctx.beginPath();ctx.arc(cx,cy,2.5,0,Math.PI*2);
+        ctx.fillStyle='#ffeb3b';ctx.fill();
+        // "+" label
+        ctx.font='bold 10px Lato';ctx.textAlign='center';ctx.textBaseline='middle';
+        ctx.fillStyle='#ffeb3b';ctx.fillText('+',cx,cy-r-8);
+        // Selection ring
+        if(_vtEditState.selected&&_vtEditState.selected.type==='added'&&_vtEditState.selected.index===ai){
+          ctx.beginPath();ctx.arc(cx,cy,r+5,0,Math.PI*2);
+          ctx.strokeStyle='#42a5f5';ctx.lineWidth=3;ctx.stroke();
+        }
+      });
+    }
+  });
+}
+
+function vtDrawBallCircle(canvasId,imgId,px,py){
+  const canvas=document.getElementById(canvasId);
+  const img=document.getElementById(imgId);
+  if(!canvas||!img||!px||!py) return;
+
+  // Use clientWidth/clientHeight (unaffected by CSS transform) for zoom compatibility
+  const dw=img.clientWidth, dh=img.clientHeight;
+  if(dw<10||dh<10) return;
+  canvas.width=dw; canvas.height=dh;
+
+  // Scale pixel coords from original resolution (1920x1080) to displayed size
+  const natW=img.naturalWidth||1920, natH=img.naturalHeight||1080;
+  const sx=dw/natW, sy=dh/natH;
+  const cx=px*sx, cy=py*sy;
+  const r=Math.max(8, Math.min(dw,dh)*0.018); // adaptive radius
+
+  const ctx=canvas.getContext('2d');
+  ctx.clearRect(0,0,dw,dh);
+
+  // Outer glow
+  ctx.beginPath();ctx.arc(cx,cy,r*2.5,0,Math.PI*2);
+  const grd=ctx.createRadialGradient(cx,cy,r*0.5,cx,cy,r*2.5);
+  grd.addColorStop(0,'rgba(76,175,80,0.35)');grd.addColorStop(1,'rgba(76,175,80,0)');
+  ctx.fillStyle=grd;ctx.fill();
+
+  // Green circle outline
+  ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);
+  ctx.strokeStyle='#4caf50';ctx.lineWidth=2.5;ctx.stroke();
+
+  // Inner dot
+  ctx.beginPath();ctx.arc(cx,cy,2.5,0,Math.PI*2);
+  ctx.fillStyle='#4caf50';ctx.fill();
+}
+
+// ---- Live slider scrub (after processing done) ----
+let _vtLiveScrubFrame=-1; // -1 = show all (latest), >=0 = show up to this frame
+(function(){
+  document.addEventListener('DOMContentLoaded',()=>{
+    const slider=document.getElementById('vt-live-slider');
+    if(slider){
+      slider.addEventListener('input',()=>{
+        if(_vtPhase!=='done') return; // only scrub after completion
+        const frame=parseInt(slider.value)||0;
+        _vtLiveScrubFrame=frame;
+        vtLiveScrubTo(frame);
+      });
+    }
+    // Register zoom events for edit mode
+    vtRegisterZoomEvents();
+  });
+})();
+
+let _vtScrubTimer=null; // debounce timer for frame fetching
+
+function vtLiveScrubTo(frame){
+  const M=_vtLiveMatches;
+  if(!M.length) return;
+  // Find index of last match at or before this frame
+  let idx=M.length-1;
+  for(let i=0;i<M.length;i++){
+    if(M[i].frame_index>frame){idx=Math.max(0,i-1);break;}
+  }
+  const fps=(_vtViewRanges&&_vtViewRanges[1])?_vtViewRanges[1].fps||25:25;
+
+  // Update time labels
+  const tl=document.getElementById('vt-live-time-label');
+  if(tl) tl.textContent=vtFormatTime(frame/fps);
+  const fi=document.getElementById('vt-live-frame-info');
+  if(fi) fi.textContent=(idx+1)+' pts | f'+frame;
+
+  // Update 3D map: show trajectory up to scrub point
+  const subset=M.slice(0,idx+1);
+  const disags=subset.map(m=>{
+    const dx=m.cam1.x-m.cam2.x, dy=m.cam1.y-m.cam2.y;
+    return Math.sqrt(dx*dx+dy*dy);
+  });
+  const sorted=[...disags].sort((a,b)=>a-b);
+  const p5=sorted[Math.floor(sorted.length*0.05)]||0;
+  const p95=sorted[Math.floor(sorted.length*0.95)]||1;
+  const range=Math.max(0.5,p95-p5);
+  const pts3d=subset.map((m,i)=>{
+    const z=Math.max(0,Math.min(6,((disags[i]-p5)/range)*4));
+    return {x:m.avgX,y:m.avgY,z:z,frame_index:m.frame_index};
+  });
+  vtUpdate3DBalls(pts3d,pts3d.length-1);
+
+  // Update minimap: show ball position + bounces up to this frame
+  vtDrawLiveMinimapScrub(idx,frame);
+
+  // Update stats sidebar
+  const sSpeed=document.getElementById('vt-live-speed');
+  if(sSpeed && idx>=2){
+    const a=M[idx-1],b=M[idx];
+    const dt=(b.frame_index-a.frame_index)/fps;
+    if(dt>0){
+      const dist=Math.sqrt(Math.pow(b.avgX-a.avgX,2)+Math.pow(b.avgY-a.avgY,2));
+      sSpeed.textContent=(dist/dt*3.6).toFixed(0)+' km/h';
+    }
+  }
+  const sPos=document.getElementById('vt-live-pos');
+  if(sPos && idx>=0) sPos.textContent='('+M[idx].avgX.toFixed(1)+', '+M[idx].avgY.toFixed(1)+')';
+
+  // Sync camera video frames (debounced to avoid flooding server)
+  clearTimeout(_vtScrubTimer);
+  _vtScrubTimer=setTimeout(()=>vtScrubLoadFrames(frame,fps),80);
+}
+
+function vtScrubLoadFrames(frame,fps){
+  const vid1=document.getElementById('vt-view1-video')?.value;
+  const vid2=document.getElementById('vt-view2-video')?.value;
+  const time1=frame/fps;
+  const cam1=document.getElementById('vt-live-cam1');
+  const cam2=document.getElementById('vt-live-cam2');
+  let loaded=0, total=0;
+  function onLoaded(){ loaded++; if(loaded>=total) vtDrawBallOverlays(frame); }
+  if(vid1&&cam1){
+    total++;
+    cam1.onload=onLoaded;
+    cam1.src='/api/video-preview/frame?filename='+encodeURIComponent(vid1)+'&time='+time1.toFixed(3);
+  }
+  if(vid2&&cam2){
+    total++;
+    cam2.onload=onLoaded;
+    // cam68 may have time offset relative to cam66
+    const off=(_vtViewRanges[2].start*_vtViewRanges[2].duration)-(_vtViewRanges[1].start*_vtViewRanges[1].duration);
+    const time2=time1+off;
+    cam2.src='/api/video-preview/frame?filename='+encodeURIComponent(vid2)+'&time='+time2.toFixed(3);
+  }
+  if(total===0) vtDrawBallOverlays(frame);
+}
+
+function vtTableRowClick(frame, rowEl){
+  // Update slider
+  const slider=document.getElementById('vt-live-slider');
+  if(slider) slider.value=frame;
+  _vtLiveScrubFrame=frame;
+  // Highlight row
+  const tbody=document.getElementById('vt-det-tbody');
+  if(tbody) tbody.querySelectorAll('tr.active').forEach(r=>r.classList.remove('active'));
+  if(rowEl) rowEl.classList.add('active');
+  // Update frame label in edit toolbar
+  const fl=document.getElementById('vt-edit-frame-label');
+  if(fl) fl.textContent='f'+frame;
+  // Scrub to that frame (updates 3D, minimap, stats, loads camera images, draws overlay)
+  vtLiveScrubTo(frame);
+}
+
+function vtDrawLiveMinimapScrub(idx,frame){
+  // Same as vtDrawLiveMinimapOnCanvas but limited to scrub frame
+  ['vt-live-minimap','vt-live-minimap2'].forEach(canvasId=>{
+    const canvas=document.getElementById(canvasId);
+    if(!canvas) return;
+    const ctx=canvas.getContext('2d');
+    const w=canvas.width,h=canvas.height;
+    if(w<10||h<10) return;
+    ctx.clearRect(0,0,w,h);
+    const pad=8;
+    const courtW=w-2*pad,courtH=h-2*pad;
+    const scaleX=courtW/COURT_W_LIVE,scaleY=courtH/COURT_L_LIVE;
+    const sc=Math.min(scaleX,scaleY);
+    const cw=COURT_W_LIVE*sc,ch=COURT_L_LIVE*sc;
+    const ox=(w-cw)/2,oy=(h-ch)/2;
+    function toC(wx,wy){return{x:ox+(COURT_W_LIVE-wx)*sc,y:oy+(COURT_L_LIVE-wy)*sc};}
+    // Court surface
+    ctx.fillStyle='#1a3a1a';ctx.fillRect(ox,oy,cw,ch);
+    ctx.strokeStyle='rgba(255,255,255,0.3)';ctx.lineWidth=1;
+    ctx.strokeRect(ox,oy,cw,ch);
+    const si=1.37*sc;
+    ctx.strokeRect(ox+si,oy,cw-2*si,ch);
+    const sN=toC(0,6.4),sF=toC(0,17.37);
+    ctx.beginPath();ctx.moveTo(ox+si,sN.y);ctx.lineTo(ox+cw-si,sN.y);ctx.stroke();
+    ctx.beginPath();ctx.moveTo(ox+si,sF.y);ctx.lineTo(ox+cw-si,sF.y);ctx.stroke();
+    const cx=toC(COURT_W_LIVE/2,0);
+    ctx.beginPath();ctx.moveTo(cx.x,sN.y);ctx.lineTo(cx.x,sF.y);ctx.stroke();
+    ctx.strokeStyle='rgba(255,255,255,0.5)';ctx.lineWidth=2;
+    const netY=toC(0,NET_Y_LIVE).y;
+    ctx.beginPath();ctx.moveTo(ox,netY);ctx.lineTo(ox+cw,netY);ctx.stroke();
+    // Current ball position at scrub point
+    if(idx>=0 && idx<_vtLiveMatches.length){
+      const m=_vtLiveMatches[idx];
+      const p=toC(m.avgX,m.avgY);
+      const grd=ctx.createRadialGradient(p.x,p.y,0,p.x,p.y,10);
+      grd.addColorStop(0,'rgba(118,255,3,0.5)');grd.addColorStop(1,'rgba(118,255,3,0)');
+      ctx.fillStyle=grd;ctx.beginPath();ctx.arc(p.x,p.y,10,0,Math.PI*2);ctx.fill();
+      ctx.fillStyle='#76ff03';ctx.beginPath();ctx.arc(p.x,p.y,3.5,0,Math.PI*2);ctx.fill();
+      ctx.strokeStyle='#fff';ctx.lineWidth=1.5;ctx.beginPath();ctx.arc(p.x,p.y,5.5,0,Math.PI*2);ctx.stroke();
+    }
+    // Bounces up to this frame
+    _vtLiveBounces.forEach((b,i)=>{
+      if(b.frame>frame) return; // skip future bounces
+      const p=toC(b.x,b.y);
+      const color=b.type==='IN'?'#4caf50':'#f44336';
+      ctx.strokeStyle=color;ctx.lineWidth=1.5;
+      ctx.beginPath();ctx.arc(p.x,p.y,8,0,Math.PI*2);ctx.stroke();
+      ctx.beginPath();ctx.arc(p.x,p.y,4,0,Math.PI*2);ctx.stroke();
+      ctx.fillStyle=color;ctx.beginPath();ctx.arc(p.x,p.y,2,0,Math.PI*2);ctx.fill();
+      ctx.font='bold 9px Lato';ctx.textAlign='center';
+      ctx.fillStyle='#fff';ctx.fillText('B'+(i+1),p.x,p.y-11);
+      ctx.font='7px Lato';ctx.fillStyle=color;ctx.fillText(b.type,p.x,p.y+17);
+    });
+  });
+}
+
+// ========== ANNOTATION EDIT SYSTEM ==========
+
+// --- Step 2: Edit state ---
+let _vtEditMode=false;
+let _vtEditTool='select';      // 'select'|'add'|'rally'
+let _vtEditHistory=[];          // undo stack: [{type, data}]
+let _vtEditDirty=false;        // unsaved changes flag
+
+let _vtEditState={
+  matchEdits:{},       // matchIndex -> {action:'deleted'}
+  addedDetections:[],  // [{frame_index, cam1:{pixel_x,pixel_y}|null, cam2:{...}|null, id}]
+  bounceEdits:{},      // bounceIndex -> {action:'deleted'|'toggled', newType}
+  rallyMarkers:[],     // [{frame, id}]
+  selected:null        // {type:'match'|'added'|'bounce'|'rally', index}
+};
+let _vtEditAddCounter=0;
+let _vtEditRallyCounter=0;
+
+// --- Zoom state for edit mode ---
+let _vtZoomLevel={cam1:1,cam2:1};
+let _vtZoomPan={cam1:{x:0,y:0},cam2:{x:0,y:0}};
+let _vtZoomDragging=null;
+let _vtZoomDragMoved=false;
+
+function vtGetEffectiveMatches(){
+  const result=[];
+  _vtLiveMatches.forEach((m,i)=>{
+    const edit=_vtEditState.matchEdits[i];
+    if(edit && edit.action==='deleted') return;
+    result.push({...m, _origIdx:i});
+  });
+  // Include added detections
+  _vtEditState.addedDetections.forEach((a,i)=>{
+    result.push({frame_index:a.frame_index, cam1:a.cam1||{}, cam2:a.cam2||{}, avgX:0, avgY:0, _addedIdx:i, _isAdded:true});
+  });
+  result.sort((a,b)=>a.frame_index-b.frame_index);
+  return result;
+}
+
+function vtGetEffectiveBounces(){
+  return _vtLiveBounces.map((b,i)=>{
+    const edit=_vtEditState.bounceEdits[i];
+    if(edit && edit.action==='deleted') return null;
+    if(edit && edit.action==='toggled') return {...b, type:edit.newType, _origIdx:i};
+    return {...b, _origIdx:i};
+  }).filter(Boolean);
+}
+
+// --- Step 3+4: Edit mode lifecycle + core operations ---
+
+function vtToggleEditMode(){
+  _vtEditMode=!_vtEditMode;
+  const btn=document.getElementById('vt-edit-toggle');
+  const toolbar=document.getElementById('vt-edit-toolbar');
+  if(btn) btn.classList.toggle('active',_vtEditMode);
+  if(toolbar) toolbar.style.display=_vtEditMode?'flex':'none';
+
+  // Toggle canvas pointer-events for click interaction
+  ['vt-overlay-cam1','vt-overlay-cam2'].forEach(id=>{
+    const c=document.getElementById(id);
+    if(c) c.classList.toggle('edit-mode',_vtEditMode);
+  });
+
+  if(_vtEditMode){
+    // Register canvas click handlers
+    const c1=document.getElementById('vt-overlay-cam1');
+    const c2=document.getElementById('vt-overlay-cam2');
+    if(c1) c1.onclick=function(e){vtEditCanvasClick(e,'cam1');};
+    if(c2) c2.onclick=function(e){vtEditCanvasClick(e,'cam2');};
+    vtSetEditTool('select');
+    // Show current frame in toolbar
+    const fl=document.getElementById('vt-edit-frame-label');
+    if(fl){const f=_vtLiveScrubFrame>=0?_vtLiveScrubFrame:(parseInt(document.getElementById('vt-live-slider')?.value)||0);fl.textContent='f'+f;}
+  } else {
+    // Remove click handlers
+    const c1=document.getElementById('vt-overlay-cam1');
+    const c2=document.getElementById('vt-overlay-cam2');
+    if(c1) c1.onclick=null;
+    if(c2) c2.onclick=null;
+    _vtEditState.selected=null;
+    document.getElementById('vt-edit-delete-btn').disabled=true;
+  }
+  // Redraw
+  vtDrawBallOverlays(_vtLiveScrubFrame>=0?_vtLiveScrubFrame:null);
+  vtLiveBuildMarkers();
+}
+
+function vtSetEditTool(tool){
+  _vtEditTool=tool;
+  document.querySelectorAll('#vt-edit-toolbar .vt-edit-tool-btn').forEach(b=>{
+    b.classList.toggle('active',b.dataset.tool===tool);
+  });
+  const info=document.getElementById('vt-edit-info');
+  if(tool==='select') info.textContent='Click ball circle to select';
+  else if(tool==='add') info.textContent='Click cam image to place ball';
+  else if(tool==='rally') info.textContent='Click to mark rally start at current frame';
+  // Clear selection when switching tools
+  _vtEditState.selected=null;
+  document.getElementById('vt-edit-delete-btn').disabled=true;
+}
+
+function vtEditCanvasClick(e,camId){
+  if(!_vtEditMode) return;
+  if(_vtZoomDragMoved) return; // suppress click after pan drag
+  const canvas=e.target;
+  const img=document.getElementById(camId==='cam1'?'vt-live-cam1':'vt-live-cam2');
+  if(!img) return;
+
+  // Convert display coords to native 1920x1080 (use clientWidth, unaffected by CSS transform)
+  const dw=canvas.clientWidth,dh=canvas.clientHeight;
+  const natW=img.naturalWidth||1920, natH=img.naturalHeight||1080;
+  const sx=dw/natW, sy=dh/natH;
+  const nativeX=e.offsetX/sx, nativeY=e.offsetY/sy;
+  const frame=parseInt(document.getElementById('vt-live-slider')?.value)||0;
+
+  if(_vtEditTool==='select'){
+    const sel=_vtEditState.selected;
+    if(sel&&(sel.type==='match'||sel.type==='added')){
+      // Already have a selection — check if clicking near another detection first
+      const nearby=vtEditFindNearby(camId,nativeX,nativeY,frame);
+      if(nearby){
+        // Clicked near another detection — select that one instead
+        vtEditSelectAt(camId,nativeX,nativeY,frame);
+      } else {
+        // Clicked empty space — MOVE the selected detection here
+        vtEditMoveSelected(camId,nativeX,nativeY);
+      }
+    } else {
+      vtEditSelectAt(camId,nativeX,nativeY,frame);
+    }
+  } else if(_vtEditTool==='add'){
+    vtEditAddDetection(camId,nativeX,nativeY,frame);
+  } else if(_vtEditTool==='rally'){
+    vtEditAddRallyMarker(frame);
+  }
+}
+
+// Check if click is near any detection (returns true/false, used to decide select-vs-move)
+function vtEditFindNearby(camId,nativeX,nativeY,frame){
+  const threshold=40;
+  // Check original matches
+  for(let i=0;i<_vtLiveMatches.length;i++){
+    const m=_vtLiveMatches[i];
+    if(_vtEditState.matchEdits[i]?.action==='deleted') continue;
+    if(Math.abs(m.frame_index-frame)>5) continue;
+    // Use modified position if available
+    const edit=_vtEditState.matchEdits[i];
+    let px,py;
+    if(edit?.action==='modified'&&edit[camId]){
+      px=edit[camId].pixel_x; py=edit[camId].pixel_y;
+    } else {
+      const cam=camId==='cam1'?m.cam1:m.cam2;
+      if(!cam||!cam.pixel_x) continue;
+      px=cam.pixel_x; py=cam.pixel_y;
+    }
+    const dx=px-nativeX,dy=py-nativeY;
+    if(Math.sqrt(dx*dx+dy*dy)<threshold) return true;
+  }
+  // Check added detections
+  for(let i=0;i<_vtEditState.addedDetections.length;i++){
+    const a=_vtEditState.addedDetections[i];
+    if(Math.abs(a.frame_index-frame)>5) continue;
+    const cam=a[camId];
+    if(!cam||!cam.pixel_x) continue;
+    const dx=cam.pixel_x-nativeX,dy=cam.pixel_y-nativeY;
+    if(Math.sqrt(dx*dx+dy*dy)<threshold) return true;
+  }
+  return false;
+}
+
+function vtEditSelectAt(camId,nativeX,nativeY,frame){
+  // Find nearest match within ±5 frames and 40px distance
+  let best=null, bestDist=40;
+  _vtLiveMatches.forEach((m,i)=>{
+    if(_vtEditState.matchEdits[i]?.action==='deleted') return;
+    if(Math.abs(m.frame_index-frame)>5) return;
+    // Use modified position if available
+    const edit=_vtEditState.matchEdits[i];
+    let px,py;
+    if(edit?.action==='modified'&&edit[camId]){
+      px=edit[camId].pixel_x; py=edit[camId].pixel_y;
+    } else {
+      const cam=camId==='cam1'?m.cam1:m.cam2;
+      if(!cam||!cam.pixel_x) return;
+      px=cam.pixel_x; py=cam.pixel_y;
+    }
+    const dx=px-nativeX, dy=py-nativeY;
+    const dist=Math.sqrt(dx*dx+dy*dy);
+    if(dist<bestDist){bestDist=dist;best={type:'match',index:i};}
+  });
+  // Also check added detections
+  _vtEditState.addedDetections.forEach((a,i)=>{
+    if(Math.abs(a.frame_index-frame)>5) return;
+    const cam=camId==='cam1'?a.cam1:a.cam2;
+    if(!cam||!cam.pixel_x) return;
+    const dx=cam.pixel_x-nativeX, dy=cam.pixel_y-nativeY;
+    const dist=Math.sqrt(dx*dx+dy*dy);
+    if(dist<bestDist){bestDist=dist;best={type:'added',index:i};}
+  });
+
+  _vtEditState.selected=best;
+  document.getElementById('vt-edit-delete-btn').disabled=!best;
+  const info=document.getElementById('vt-edit-info');
+  if(best){
+    const label=best.type==='match'?'match #'+best.index+' (f'+_vtLiveMatches[best.index].frame_index+')':'added #'+best.index;
+    info.textContent='Selected '+label+' — click to move, Del to delete';
+  } else info.textContent='No detection found near click';
+  vtDrawBallOverlays(_vtLiveScrubFrame>=0?_vtLiveScrubFrame:null);
+}
+
+function vtEditDeleteSelected(){
+  const sel=_vtEditState.selected;
+  if(!sel) return;
+  if(sel.type==='match'){
+    const orig=_vtLiveMatches[sel.index];
+    _vtEditState.matchEdits[sel.index]={action:'deleted'};
+    _vtEditHistory.push({type:'deleteMatch',index:sel.index,original:orig});
+  } else if(sel.type==='added'){
+    const removed=_vtEditState.addedDetections.splice(sel.index,1)[0];
+    _vtEditHistory.push({type:'removeAdded',index:sel.index,data:removed});
+  } else if(sel.type==='bounce'){
+    _vtEditState.bounceEdits[sel.index]={action:'deleted'};
+    _vtEditHistory.push({type:'deleteBounce',index:sel.index});
+  } else if(sel.type==='rally'){
+    const removed=_vtEditState.rallyMarkers.splice(sel.index,1)[0];
+    _vtEditHistory.push({type:'removeRally',index:sel.index,data:removed});
+  }
+  _vtEditState.selected=null;
+  _vtEditDirty=true;
+  document.getElementById('vt-edit-delete-btn').disabled=true;
+  vtDrawBallOverlays(_vtLiveScrubFrame>=0?_vtLiveScrubFrame:null);
+  vtLiveBuildMarkers();
+  vtRebuildDetTable();
+}
+
+function vtEditMoveSelected(camId,nativeX,nativeY){
+  const sel=_vtEditState.selected;
+  if(!sel) return;
+  if(sel.type==='match'){
+    const m=_vtLiveMatches[sel.index];
+    const existing=_vtEditState.matchEdits[sel.index];
+    // Save previous state for undo
+    const prevEdit=existing?JSON.parse(JSON.stringify(existing)):null;
+    // Build or update modified entry — keep other camera's override if any
+    const edit=existing&&existing.action==='modified'?existing:{action:'modified'};
+    // Save original pixel positions for this camera (for undo)
+    const origCam=camId==='cam1'?m.cam1:m.cam2;
+    const prevPx=edit[camId]?{...edit[camId]}:(origCam?{pixel_x:origCam.pixel_x,pixel_y:origCam.pixel_y}:null);
+    edit[camId]={pixel_x:nativeX,pixel_y:nativeY};
+    _vtEditState.matchEdits[sel.index]=edit;
+    _vtEditHistory.push({type:'moveMatch',index:sel.index,camId:camId,prevEdit:prevEdit});
+    _vtEditDirty=true;
+    const info=document.getElementById('vt-edit-info');
+    info.textContent='Moved match #'+sel.index+' '+camId+' → ('+Math.round(nativeX)+', '+Math.round(nativeY)+')';
+  } else if(sel.type==='added'){
+    const a=_vtEditState.addedDetections[sel.index];
+    const prevPx=a[camId]?{...a[camId]}:null;
+    a[camId]={pixel_x:nativeX,pixel_y:nativeY};
+    _vtEditHistory.push({type:'moveAdded',index:sel.index,camId:camId,prevPx:prevPx});
+    _vtEditDirty=true;
+    const info=document.getElementById('vt-edit-info');
+    info.textContent='Moved added #'+sel.index+' '+camId+' → ('+Math.round(nativeX)+', '+Math.round(nativeY)+')';
+  }
+  // Keep selection active so user can adjust the other camera too
+  vtDrawBallOverlays(_vtLiveScrubFrame>=0?_vtLiveScrubFrame:null);
+  vtRebuildDetTable();
+}
+
+function vtEditAddDetection(camId,nativeX,nativeY,frame){
+  // Check if last added has same frame and is missing this camera
+  const last=_vtEditState.addedDetections[_vtEditState.addedDetections.length-1];
+  if(last && last.frame_index===frame){
+    if(camId==='cam1' && !last.cam1){last.cam1={pixel_x:nativeX,pixel_y:nativeY};}
+    else if(camId==='cam2' && !last.cam2){last.cam2={pixel_x:nativeX,pixel_y:nativeY};}
+    else {
+      // Same cam already set — create new entry
+      const entry={frame_index:frame,cam1:null,cam2:null,id:'add_'+(_vtEditAddCounter++)};
+      entry[camId==='cam1'?'cam1':'cam2']={pixel_x:nativeX,pixel_y:nativeY};
+      _vtEditState.addedDetections.push(entry);
+      _vtEditHistory.push({type:'addDetection',index:_vtEditState.addedDetections.length-1});
+    }
+  } else {
+    const entry={frame_index:frame,cam1:null,cam2:null,id:'add_'+(_vtEditAddCounter++)};
+    entry[camId==='cam1'?'cam1':'cam2']={pixel_x:nativeX,pixel_y:nativeY};
+    _vtEditState.addedDetections.push(entry);
+    _vtEditHistory.push({type:'addDetection',index:_vtEditState.addedDetections.length-1});
+  }
+  _vtEditDirty=true;
+  const info=document.getElementById('vt-edit-info');
+  info.textContent='Added detection on '+camId+' at frame '+frame;
+  vtDrawBallOverlays(_vtLiveScrubFrame>=0?_vtLiveScrubFrame:null);
+}
+
+function vtEditAddRallyMarker(frame){
+  // Check for duplicate
+  if(_vtEditState.rallyMarkers.some(r=>Math.abs(r.frame-frame)<3)) return;
+  const marker={frame:frame,id:'rally_'+(_vtEditRallyCounter++)};
+  _vtEditState.rallyMarkers.push(marker);
+  _vtEditState.rallyMarkers.sort((a,b)=>a.frame-b.frame);
+  _vtEditHistory.push({type:'addRally',frame:frame});
+  _vtEditDirty=true;
+  const info=document.getElementById('vt-edit-info');
+  info.textContent='Rally marker at frame '+frame;
+  vtLiveBuildMarkers();
+}
+
+function vtEditToggleBounce(bounceIdx){
+  const b=_vtLiveBounces[bounceIdx];
+  if(!b) return;
+  const existing=_vtEditState.bounceEdits[bounceIdx];
+  if(existing && existing.action==='toggled'){
+    // Toggle back to original
+    delete _vtEditState.bounceEdits[bounceIdx];
+  } else {
+    _vtEditState.bounceEdits[bounceIdx]={action:'toggled', originalType:b.type, newType:b.type==='IN'?'OUT':'IN'};
+  }
+  _vtEditHistory.push({type:'toggleBounce',index:bounceIdx});
+  _vtEditDirty=true;
+  vtLiveBuildMarkers();
+  vtDrawBallOverlays(_vtLiveScrubFrame>=0?_vtLiveScrubFrame:null);
+}
+
+function vtEditUndo(){
+  if(!_vtEditHistory.length) return;
+  const last=_vtEditHistory.pop();
+  if(last.type==='deleteMatch'){
+    delete _vtEditState.matchEdits[last.index];
+  } else if(last.type==='removeAdded'){
+    _vtEditState.addedDetections.splice(last.index,0,last.data);
+  } else if(last.type==='deleteBounce'){
+    delete _vtEditState.bounceEdits[last.index];
+  } else if(last.type==='removeRally'){
+    _vtEditState.rallyMarkers.splice(last.index,0,last.data);
+    _vtEditState.rallyMarkers.sort((a,b)=>a.frame-b.frame);
+  } else if(last.type==='addDetection'){
+    _vtEditState.addedDetections.pop();
+  } else if(last.type==='addRally'){
+    _vtEditState.rallyMarkers=_vtEditState.rallyMarkers.filter(r=>r.frame!==last.frame);
+  } else if(last.type==='toggleBounce'){
+    delete _vtEditState.bounceEdits[last.index];
+  } else if(last.type==='moveMatch'){
+    // Restore previous edit state for this match
+    if(last.prevEdit){
+      _vtEditState.matchEdits[last.index]=last.prevEdit;
+    } else {
+      delete _vtEditState.matchEdits[last.index];
+    }
+  } else if(last.type==='moveAdded'){
+    const a=_vtEditState.addedDetections[last.index];
+    if(a){
+      if(last.prevPx) a[last.camId]=last.prevPx;
+      else a[last.camId]=null;
+    }
+  }
+  _vtEditState.selected=null;
+  document.getElementById('vt-edit-delete-btn').disabled=true;
+  vtDrawBallOverlays(_vtLiveScrubFrame>=0?_vtLiveScrubFrame:null);
+  vtLiveBuildMarkers();
+  vtRebuildDetTable();
+}
+
+// --- Step 6: Save / Load ---
+
+async function vtEditSave(){
+  const metadata={
+    cam1_video:document.getElementById('vt-view1-video')?.value||'',
+    cam2_video:document.getElementById('vt-view2-video')?.value||'',
+    clip_range:{
+      cam1:{start:_vtViewRanges[1].start,end:_vtViewRanges[1].end,fps:_vtViewRanges[1].fps,duration:_vtViewRanges[1].duration},
+      cam2:{start:_vtViewRanges[2].start,end:_vtViewRanges[2].end,fps:_vtViewRanges[2].fps,duration:_vtViewRanges[2].duration}
+    },
+    saved_at:new Date().toISOString(),
+    total_matches:_vtLiveMatches.length,
+    total_bounces:_vtLiveBounces.length
+  };
+
+  // Build matches array with status flags
+  const matches=_vtLiveMatches.map((m,i)=>{
+    const edit=_vtEditState.matchEdits[i];
+    // For modified matches, use overridden pixel positions
+    const cam1px=(edit?.action==='modified'&&edit.cam1)?edit.cam1.pixel_x:m.cam1?.pixel_x;
+    const cam1py=(edit?.action==='modified'&&edit.cam1)?edit.cam1.pixel_y:m.cam1?.pixel_y;
+    const cam2px=(edit?.action==='modified'&&edit.cam2)?edit.cam2.pixel_x:m.cam2?.pixel_x;
+    const cam2py=(edit?.action==='modified'&&edit.cam2)?edit.cam2.pixel_y:m.cam2?.pixel_y;
+    return {
+      frame_index:m.frame_index,
+      status:edit?edit.action:'original',
+      cam1:{pixel_x:cam1px,pixel_y:cam1py,x:m.cam1?.x,y:m.cam1?.y},
+      cam2:{pixel_x:cam2px,pixel_y:cam2py,x:m.cam2?.x,y:m.cam2?.y},
+      avgX:m.avgX,avgY:m.avgY
+    };
+  });
+  // Include added detections
+  _vtEditState.addedDetections.forEach(a=>{
+    matches.push({
+      frame_index:a.frame_index,
+      status:'added',
+      cam1:a.cam1?{pixel_x:a.cam1.pixel_x,pixel_y:a.cam1.pixel_y}:null,
+      cam2:a.cam2?{pixel_x:a.cam2.pixel_x,pixel_y:a.cam2.pixel_y}:null,
+      avgX:0,avgY:0
+    });
+  });
+  matches.sort((a,b)=>a.frame_index-b.frame_index);
+
+  // Build bounces
+  const bounces=_vtLiveBounces.map((b,i)=>{
+    const edit=_vtEditState.bounceEdits[i];
+    let status='original',type=b.type;
+    if(edit?.action==='deleted'){status='deleted';}
+    else if(edit?.action==='toggled'){status='toggled';type=edit.newType;}
+    return {frame:b.frame,x:b.x,y:b.y,type:type,status:status,original_type:b.type};
+  });
+
+  const payload={metadata,matches,bounces,rally_markers:_vtEditState.rallyMarkers.map(r=>({frame:r.frame}))};
+
+  try{
+    const r=await fetch('/api/annotations/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+    const d=await r.json();
+    if(d.status==='ok'){
+      _vtEditDirty=false;
+      const info=document.getElementById('vt-edit-info');
+      if(info) info.textContent='Saved: '+d.filename;
+      const saveBtn=document.getElementById('vt-save-btn');
+      if(saveBtn){saveBtn.style.borderColor='#4caf50';saveBtn.style.color='#4caf50';setTimeout(()=>{saveBtn.style.borderColor='';saveBtn.style.color='';},2000);}
+    }
+  }catch(e){console.error('Save failed:',e);}
+}
+
+// --- Step 7: Frame-by-frame stepping ---
+function vtEditStepFrame(delta){
+  const slider=document.getElementById('vt-live-slider');
+  if(!slider) return;
+  const maxF=parseInt(slider.max)||0;
+  const minF=parseInt(slider.min)||0;
+  let cur=_vtLiveScrubFrame>=0?_vtLiveScrubFrame:(parseInt(slider.value)||0);
+  let next=cur+delta;
+  if(next<minF) next=minF;
+  if(next>maxF) next=maxF;
+  if(next===cur) return;
+  slider.value=next;
+  _vtLiveScrubFrame=next;
+  vtLiveScrubTo(next);
+  // Deselect current edit selection when stepping frames
+  if(_vtEditState.selected){_vtEditState.selected=null;const db=document.getElementById('vt-edit-delete-btn');if(db)db.disabled=true;}
+  // Update frame label
+  const fl=document.getElementById('vt-edit-frame-label');
+  if(fl) fl.textContent='f'+next;
+  // Update active row in table
+  const tbody=document.getElementById('vt-det-tbody');
+  if(tbody){tbody.querySelectorAll('tr.active').forEach(r=>r.classList.remove('active'));
+    tbody.querySelectorAll('tr').forEach(r=>{if(r.getAttribute('onclick')&&r.getAttribute('onclick').includes('('+next+','))r.classList.add('active');});
+  }
+}
+
+// --- Step 8: Keyboard shortcuts ---
+document.addEventListener('keydown',function(e){
+  if(!_vtEditMode) return;
+  if(e.target.tagName==='INPUT'||e.target.tagName==='TEXTAREA') return;
+  if(e.key==='Delete'||e.key==='Backspace'){e.preventDefault();vtEditDeleteSelected();}
+  else if(e.key==='z'&&(e.ctrlKey||e.metaKey)){e.preventDefault();vtEditUndo();}
+  else if(e.key==='ArrowLeft'){e.preventDefault();vtEditStepFrame(-1);}
+  else if(e.key==='ArrowRight'){e.preventDefault();vtEditStepFrame(1);}
+  else if(e.key==='1'){vtSetEditTool('select');}
+  else if(e.key==='2'){vtSetEditTool('add');}
+  else if(e.key==='3'){vtSetEditTool('rally');}
+  else if(e.key==='Escape'){vtToggleEditMode();}
+});
+
+// --- Zoom system for edit mode ---
+function vtApplyZoom(camKey){
+  const imgId=camKey==='cam1'?'vt-live-cam1':'vt-live-cam2';
+  const canvasId=camKey==='cam1'?'vt-overlay-cam1':'vt-overlay-cam2';
+  const img=document.getElementById(imgId);
+  const canvas=document.getElementById(canvasId);
+  const zoom=_vtZoomLevel[camKey];
+  const pan=_vtZoomPan[camKey];
+  const transform=zoom<=1.001?'':`scale(${zoom}) translate(${pan.x/zoom}px, ${pan.y/zoom}px)`;
+  const origin='0 0';
+  if(img){img.style.transformOrigin=origin;img.style.transform=transform;}
+  if(canvas){canvas.style.transformOrigin=origin;canvas.style.transform=transform;}
+  // Update zoom indicator
+  const ind=document.getElementById('vt-zoom-ind-'+camKey);
+  const txt=document.getElementById('vt-zoom-txt-'+camKey);
+  if(ind&&txt){
+    ind.style.display=zoom>1.01?'block':'none';
+    txt.textContent=zoom.toFixed(1)+'x';
+  }
+}
+
+function vtZoomAt(camKey,clientX,clientY,deltaY){
+  const imgId=camKey==='cam1'?'vt-live-cam1':'vt-live-cam2';
+  const img=document.getElementById(imgId);
+  if(!img) return;
+  const parent=img.parentElement;
+  const rect=parent.getBoundingClientRect();
+  const cx=clientX-rect.left;
+  const cy=clientY-rect.top;
+  const oldZoom=_vtZoomLevel[camKey];
+  const factor=deltaY>0?1/1.2:1.2;
+  const newZoom=Math.max(1,Math.min(5,oldZoom*factor));
+  if(Math.abs(newZoom-oldZoom)<0.001) return;
+  // Keep point under cursor stationary
+  _vtZoomPan[camKey].x=cx-(cx-_vtZoomPan[camKey].x)*(newZoom/oldZoom);
+  _vtZoomPan[camKey].y=cy-(cy-_vtZoomPan[camKey].y)*(newZoom/oldZoom);
+  _vtZoomLevel[camKey]=newZoom;
+  vtClampZoomPan(camKey);
+  vtApplyZoom(camKey);
+}
+
+function vtClampZoomPan(camKey){
+  const imgId=camKey==='cam1'?'vt-live-cam1':'vt-live-cam2';
+  const img=document.getElementById(imgId);
+  if(!img) return;
+  const parent=img.parentElement;
+  const pw=parent.clientWidth,ph=parent.clientHeight;
+  const zoom=_vtZoomLevel[camKey];
+  const pan=_vtZoomPan[camKey];
+  const scaledW=pw*zoom,scaledH=ph*zoom;
+  // Don't allow panning so far that image leaves viewport entirely
+  const maxPanX=0,maxPanY=0;
+  const minPanX=pw-scaledW,minPanY=ph-scaledH;
+  pan.x=Math.max(minPanX,Math.min(maxPanX,pan.x));
+  pan.y=Math.max(minPanY,Math.min(maxPanY,pan.y));
+}
+
+function vtResetZoom(camKey){
+  _vtZoomLevel[camKey]=1;
+  _vtZoomPan[camKey]={x:0,y:0};
+  vtApplyZoom(camKey);
+}
+
+let _vtZoomEventsRegistered=false;
+function vtRegisterZoomEvents(){
+  if(_vtZoomEventsRegistered) return;
+  _vtZoomEventsRegistered=true;
+  [{camKey:'cam1',id:'vt-pgcam-1'},{camKey:'cam2',id:'vt-pgcam-2'}].forEach(({camKey,id})=>{
+    const pgCam=document.getElementById(id);
+    if(!pgCam) return;
+    // Wheel zoom (only in edit mode)
+    pgCam.addEventListener('wheel',e=>{
+      if(!_vtEditMode) return;
+      e.preventDefault();
+      vtZoomAt(camKey,e.clientX,e.clientY,e.deltaY);
+    },{passive:false});
+    // Pan: Alt+left-click drag or middle-click drag
+    pgCam.addEventListener('mousedown',e=>{
+      if(!_vtEditMode) return;
+      if(_vtZoomLevel[camKey]<=1.01) return; // no pan at 1x
+      if(e.button===1||(e.button===0&&e.altKey)){
+        e.preventDefault();
+        _vtZoomDragging={cam:camKey,startX:e.clientX,startY:e.clientY,
+                         panX0:_vtZoomPan[camKey].x,panY0:_vtZoomPan[camKey].y};
+        _vtZoomDragMoved=false;
+        pgCam.style.cursor='grabbing';
+      }
+    });
+    pgCam.addEventListener('auxclick',e=>{if(e.button===1)e.preventDefault();});
+  });
+  // Global mousemove/mouseup for pan
+  document.addEventListener('mousemove',e=>{
+    if(!_vtZoomDragging) return;
+    const dx=e.clientX-_vtZoomDragging.startX;
+    const dy=e.clientY-_vtZoomDragging.startY;
+    if(Math.abs(dx)>3||Math.abs(dy)>3) _vtZoomDragMoved=true;
+    const ck=_vtZoomDragging.cam;
+    _vtZoomPan[ck].x=_vtZoomDragging.panX0+dx;
+    _vtZoomPan[ck].y=_vtZoomDragging.panY0+dy;
+    vtClampZoomPan(ck);
+    vtApplyZoom(ck);
+  });
+  document.addEventListener('mouseup',e=>{
+    if(!_vtZoomDragging) return;
+    const ck=_vtZoomDragging.cam;
+    const pgCam=document.getElementById(ck==='cam1'?'vt-pgcam-1':'vt-pgcam-2');
+    if(pgCam) pgCam.style.cursor='';
+    _vtZoomDragging=null;
+    setTimeout(()=>{_vtZoomDragMoved=false;},50);
+  });
+}
+
+// ========== END ANNOTATION EDIT SYSTEM ==========
+
+function vtDrawLiveMinimap(){
+  // Draw on both the bottom-panel minimap and the inline processing minimap
+  ['vt-live-minimap','vt-live-minimap2'].forEach(canvasId=>{
+    const canvas=document.getElementById(canvasId);
+    if(!canvas||canvas.style.display==='none') {
+      // For minimap2, check parent visibility
+      if(canvasId==='vt-live-minimap2'){
+        const pa=document.getElementById('vt-player-area');
+        if(!pa||pa.style.display==='none') return;
+        // Auto-size
+        const pp=canvas.parentElement;
+        if(pp&&(canvas.width<10||canvas.height<10)){
+          canvas.width=pp.clientWidth||600;
+          canvas.height=pp.clientHeight||250;
+        }
+      } else return;
+    }
+    vtDrawLiveMinimapOnCanvas(canvas);
+  });
+}
+
+function vtDrawLiveMinimapOnCanvas(canvas){
+  const ctx=canvas.getContext('2d');
+  const w=canvas.width, h=canvas.height;
+  if(w<10||h<10) return;
+  ctx.clearRect(0,0,w,h);
+
+  // Court layout (same as playback minimap)
+  const pad=8;
+  const courtW=w-2*pad, courtH=h-2*pad;
+  const scaleX=courtW/COURT_W_LIVE, scaleY=courtH/COURT_L_LIVE;
+  const sc=Math.min(scaleX,scaleY);
+  const cw=COURT_W_LIVE*sc, ch=COURT_L_LIVE*sc;
+  const ox=(w-cw)/2, oy=(h-ch)/2;
+
+  function toC(wx,wy){
+    return {x:ox+(COURT_W_LIVE-wx)*sc, y:oy+(COURT_L_LIVE-wy)*sc};
+  }
+
+  // Court surface
+  ctx.fillStyle='#1a3a1a';
+  ctx.fillRect(ox,oy,cw,ch);
+  // Court lines
+  ctx.strokeStyle='rgba(255,255,255,0.3)';ctx.lineWidth=1;
+  ctx.strokeRect(ox,oy,cw,ch);
+  const si=1.37*sc;
+  ctx.strokeRect(ox+si,oy,cw-2*si,ch);
+  const sN=toC(0,6.4), sF=toC(0,17.37);
+  ctx.beginPath();ctx.moveTo(ox+si,sN.y);ctx.lineTo(ox+cw-si,sN.y);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(ox+si,sF.y);ctx.lineTo(ox+cw-si,sF.y);ctx.stroke();
+  const cx=toC(COURT_W_LIVE/2,0);
+  ctx.beginPath();ctx.moveTo(cx.x,sN.y);ctx.lineTo(cx.x,sF.y);ctx.stroke();
+  // Net
+  ctx.strokeStyle='rgba(255,255,255,0.5)';ctx.lineWidth=2;
+  const netY=toC(0,NET_Y_LIVE).y;
+  ctx.beginPath();ctx.moveTo(ox,netY);ctx.lineTo(ox+cw,netY);ctx.stroke();
+
+  // Current ball position (small dot)
+  const mLen=_vtLiveMatches.length;
+  if(mLen>0){
+    const last=_vtLiveMatches[mLen-1];
+    const p=toC(last.avgX,last.avgY);
+    // Glow
+    const grd=ctx.createRadialGradient(p.x,p.y,0,p.x,p.y,10);
+    grd.addColorStop(0,'rgba(118,255,3,0.5)');
+    grd.addColorStop(1,'rgba(118,255,3,0)');
+    ctx.fillStyle=grd;
+    ctx.beginPath();ctx.arc(p.x,p.y,10,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle='#76ff03';
+    ctx.beginPath();ctx.arc(p.x,p.y,3.5,0,Math.PI*2);ctx.fill();
+    ctx.strokeStyle='#fff';ctx.lineWidth=1.5;
+    ctx.beginPath();ctx.arc(p.x,p.y,5.5,0,Math.PI*2);ctx.stroke();
+  }
+
+  // Bounce markers only (no trajectory — that's on 3D map)
+  _vtLiveBounces.forEach((b,i)=>{
+    const p=toC(b.x,b.y);
+    const color=b.type==='IN'?'#4caf50':'#f44336';
+    // Target circles
+    ctx.strokeStyle=color;ctx.lineWidth=1.5;
+    ctx.beginPath();ctx.arc(p.x,p.y,8,0,Math.PI*2);ctx.stroke();
+    ctx.beginPath();ctx.arc(p.x,p.y,4,0,Math.PI*2);ctx.stroke();
+    ctx.fillStyle=color;
+    ctx.beginPath();ctx.arc(p.x,p.y,2,0,Math.PI*2);ctx.fill();
+    // Label
+    ctx.font='bold 9px Lato';ctx.textAlign='center';
+    ctx.fillStyle='#fff';ctx.fillText('B'+(i+1),p.x,p.y-11);
+    ctx.font='7px Lato';ctx.fillStyle=color;
+    ctx.fillText(b.type,p.x,p.y+17);
+  });
 }
 
 // ---- Detection Table (3D results) ----
@@ -2192,10 +3794,10 @@ function vtSeekTo3D(index){
   if(!_vt3dPoints[index]) return;
 
   if(_vtPlaybackMode){
-    // In playback mode: pause and seek
+    // In playback mode: pause and seek to this detection's time
     vtPlaybackPause();
-    _vtPlaybackIdx=index;
-    vtRenderPlaybackFrame(index);
+    const pt=_vt3dPoints[index];
+    if(pt&&pt.t!==undefined) vtRenderPlaybackFrameAtTime(pt.t);
   } else {
     // Legacy single-view seek
     const pt=_vt3dPoints[index];
@@ -2221,10 +3823,15 @@ function vtSeekTo3D(index){
 // ---- Playback Mode ----
 
 function vtEnterPlayback(){
-  if(!_vt3dPoints.length) return;
   _vtPlaybackMode=true;
-  _vtPlaybackIdx=0;
   _vtPlaybackPlaying=false;
+
+  // Compute time range from clip selection
+  const v1=_vtViewRanges[1], v2=_vtViewRanges[2];
+  _vtPlaybackTimeStart=v1.start*v1.duration;
+  _vtPlaybackTimeEnd=v1.end*v1.duration;
+  _vtPlaybackTimeCurrent=_vtPlaybackTimeStart;
+  _vtPlaybackFPS=(v1.fps&&v1.fps>0)?v1.fps:30;
 
   // Hide dual preview and MJPEG player, show playback area
   document.getElementById('vt-dual-preview').style.display='none';
@@ -2253,9 +3860,12 @@ function vtEnterPlayback(){
     }
   }
 
-  // Configure slider
+  // Configure slider: time-based (milliseconds for fine granularity)
   const slider=document.getElementById('vt-pb-slider');
-  slider.max=_vt3dPoints.length-1;
+  const totalMs=Math.round((_vtPlaybackTimeEnd-_vtPlaybackTimeStart)*1000);
+  slider.min=0;
+  slider.max=totalMs;
+  slider.step=Math.max(1,Math.round(1000/_vtPlaybackFPS));
   slider.value=0;
 
   // Reset speed
@@ -2265,8 +3875,26 @@ function vtEnterPlayback(){
   // Build timeline event markers
   vtBuildTimelineMarkers();
 
+  // Z ground-plane validation check
+  if(_vt3dPoints.length>10){
+    const zVals=_vt3dPoints.map(p=>p.z).sort((a,b)=>a-b);
+    const zMin=zVals[0];
+    const zMedian=zVals[Math.floor(zVals.length/2)];
+    const zMax=zVals[zVals.length-1];
+    if(zMin<-1.0||zMedian>3.0||zMin>2.0){
+      const warn=document.getElementById('cal-z-validation');
+      const info=document.getElementById('cal-z-info');
+      if(warn&&info){
+        warn.style.display='block';
+        info.textContent='Z range: ['+zMin.toFixed(2)+', '+zMax.toFixed(2)+'] median='+zMedian.toFixed(2)+
+          'm. Values appear offset — re-calibrate cameras for accurate bounce detection.';
+      }
+      console.warn('Z validation warning: min='+zMin.toFixed(2)+' median='+zMedian.toFixed(2)+' max='+zMax.toFixed(2));
+    }
+  }
+
   // Render first frame (calls minimap + stats internally)
-  vtRenderPlaybackFrame(0);
+  vtRenderPlaybackFrameAtTime(_vtPlaybackTimeStart);
 }
 
 function vtExitPlayback(){
@@ -2300,61 +3928,102 @@ function vtExitPlayback(){
   document.getElementById('vt-playback-controls').style.display='none';
 }
 
-function vtRenderPlaybackFrame(idx){
-  const pt=_vt3dPoints[idx];
-  if(!pt) return;
-
-  _vtPlaybackIdx=idx;
-
-  // Update slider position
-  document.getElementById('vt-pb-slider').value=idx;
-  document.getElementById('vt-pb-frame-info').textContent=(idx+1)+' / '+_vt3dPoints.length;
-
-  // Highlight active row in detection table
-  document.querySelectorAll('#vt-det-tbody tr').forEach(tr=>tr.classList.remove('active'));
-  const row=document.querySelector(`#vt-det-tbody tr[data-idx="${idx}"]`);
-  if(row){
-    row.classList.add('active');
-    row.scrollIntoView({block:'nearest',behavior:'smooth'});
+// Binary search: find nearest 3D point by time. Returns {idx, pt, dt} or null
+function vtFindNearestPointByTime(t){
+  if(!_vt3dPoints.length) return null;
+  let lo=0, hi=_vt3dPoints.length-1;
+  while(lo<hi){
+    const mid=(lo+hi)>>1;
+    if(_vt3dPoints[mid].t<t) lo=mid+1; else hi=mid;
   }
+  // Check lo and lo-1 for closest
+  let bestIdx=lo;
+  if(lo>0){
+    const d0=Math.abs(_vt3dPoints[lo].t-t);
+    const d1=Math.abs(_vt3dPoints[lo-1].t-t);
+    if(d1<d0) bestIdx=lo-1;
+  }
+  const pt=_vt3dPoints[bestIdx];
+  return {idx:bestIdx, pt:pt, dt:Math.abs(pt.t-t)};
+}
 
-  // Support both field naming conventions:
-  //   compute-3d:          frame_index, cam1_pixel, cam2_pixel
-  //   compute-trajectory:  frame_a,     cam_a_pixel, cam_b_pixel
-  const frameId=pt.frame_index!==undefined?pt.frame_index:pt.frame_a;
-  const pxCam1=pt.cam1_pixel||pt.cam_a_pixel;
-  const pxCam2=pt.cam2_pixel||pt.cam_b_pixel;
+// Find all 3D points up to (and including) time t
+function vtPointsUpToTime(t){
+  let count=0;
+  for(let i=0;i<_vt3dPoints.length;i++){
+    if(_vt3dPoints[i].t<=t+0.001) count=i+1; else break;
+  }
+  return count;
+}
 
-  // Fetch cam66 frame (View 1)
+function vtRenderPlaybackFrameAtTime(time){
+  _vtPlaybackTimeCurrent=time;
+
+  // Update slider position (milliseconds from start)
+  const sliderVal=Math.round((time-_vtPlaybackTimeStart)*1000);
+  document.getElementById('vt-pb-slider').value=sliderVal;
+
+  // Time display
+  const elapsed=(time-_vtPlaybackTimeStart).toFixed(2);
+  const total=(_vtPlaybackTimeEnd-_vtPlaybackTimeStart).toFixed(2);
+  document.getElementById('vt-pb-frame-info').textContent=elapsed+'s / '+total+'s';
+
+  // Find nearest 3D detection point
+  const nearest=vtFindNearestPointByTime(time);
+  const hasDetection=nearest&&nearest.dt<0.15; // within 150ms = detection active
+  const det=hasDetection?nearest:null;
+
+  // Camera frames: always fetch (continuous video), add ball overlay if detection found
   const vid1=document.getElementById('vt-view1-video').value;
-  if(vid1&&pxCam1&&frameId!==undefined){
-    const info1=_vtVideos.find(v=>v.filename===vid1);
-    const fps1=(info1&&info1.fps)?info1.fps:30;
-    const clipStart1=_vtViewRanges[1].start*_vtViewRanges[1].duration;
-    const t1=clipStart1+frameId/fps1;
-    document.getElementById('vt-play-cam1').src=
-      '/api/video-preview/frame?filename='+encodeURIComponent(vid1)
-      +'&time='+t1+'&pixel_x='+pxCam1[0]+'&pixel_y='+pxCam1[1];
-  }
-
-  // Fetch cam68 frame (View 2)
   const vid2=document.getElementById('vt-view2-video').value;
-  if(vid2&&pxCam2&&frameId!==undefined){
-    const info2=_vtVideos.find(v=>v.filename===vid2);
-    const fps2=(info2&&info2.fps)?info2.fps:30;
-    const clipStart2=_vtViewRanges[2].start*_vtViewRanges[2].duration;
-    const t2=clipStart2+frameId/fps2;
-    document.getElementById('vt-play-cam2').src=
-      '/api/video-preview/frame?filename='+encodeURIComponent(vid2)
-      +'&time='+t2+'&pixel_x='+pxCam2[0]+'&pixel_y='+pxCam2[1];
+
+  if(vid1){
+    let url1='/api/video-preview/frame?filename='+encodeURIComponent(vid1)+'&time='+time;
+    if(det&&det.pt){
+      const px1=det.pt.cam1_pixel||det.pt.cam_a_pixel;
+      if(px1) url1+='&pixel_x='+px1[0]+'&pixel_y='+px1[1];
+    }
+    document.getElementById('vt-play-cam1').src=url1;
   }
 
-  // Update 3D map: show trajectory up to current point, highlight current
-  vtUpdate3DBalls(_vt3dPoints.slice(0,idx+1),idx);
+  if(vid2){
+    // cam68 time may differ due to time offset
+    const offsetSec=(_vtViewRanges[2].start*_vtViewRanges[2].duration)-(_vtViewRanges[1].start*_vtViewRanges[1].duration);
+    const t2=time+offsetSec;
+    let url2='/api/video-preview/frame?filename='+encodeURIComponent(vid2)+'&time='+t2;
+    if(det&&det.pt){
+      const px2=det.pt.cam2_pixel||det.pt.cam_b_pixel;
+      if(px2) url2+='&pixel_x='+px2[0]+'&pixel_y='+px2[1];
+    }
+    document.getElementById('vt-play-cam2').src=url2;
+  }
 
-  // Update presentation grid minimap and per-frame stats
-  vtDrawPlaybackMinimap(idx);
-  vtUpdatePerFrameStats(idx);
+  // Highlight detection table row if detection exists
+  document.querySelectorAll('#vt-det-tbody tr').forEach(tr=>tr.classList.remove('active'));
+  if(det){
+    const row=document.querySelector(`#vt-det-tbody tr[data-idx="${det.idx}"]`);
+    if(row){
+      row.classList.add('active');
+      row.scrollIntoView({block:'nearest',behavior:'smooth'});
+    }
+  }
+
+  // Update 3D map: show trajectory up to current time
+  const nPts=vtPointsUpToTime(time);
+  if(nPts>0){
+    vtUpdate3DBalls(_vt3dPoints.slice(0,nPts),nPts-1);
+  }
+
+  // Update presentation grid minimap and per-frame stats (time-aware)
+  vtDrawPlaybackMinimapTime(time);
+  vtUpdatePerFrameStatsTime(time);
+}
+
+// Legacy wrapper: render by detection index (used by rally switch etc.)
+function vtRenderPlaybackFrame(idx){
+  if(idx>=0&&idx<_vt3dPoints.length){
+    vtRenderPlaybackFrameAtTime(_vt3dPoints[idx].t);
+  }
 }
 
 function vtPlaybackToggle(){
@@ -2366,7 +4035,7 @@ function vtPlaybackToggle(){
 }
 
 function vtPlaybackPlay(){
-  if(!_vtPlaybackMode||!_vt3dPoints.length) return;
+  if(!_vtPlaybackMode) return;
   _vtPlaybackPlaying=true;
 
   // Update button icon to pause
@@ -2374,16 +4043,18 @@ function vtPlaybackPlay(){
     '<svg viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>';
   document.getElementById('vt-pb-playpause').classList.add('active');
 
-  // Base interval: ~200ms per detection at 1x speed
-  const interval=200/_vtPlaybackSpeed;
+  // Time-based playback: advance by 1/FPS seconds per tick
+  const frameStep=1/_vtPlaybackFPS;
+  const interval=Math.round(1000/_vtPlaybackFPS/_vtPlaybackSpeed);
   _vtPlaybackTimer=setInterval(()=>{
-    if(_vtPlaybackIdx>=_vt3dPoints.length-1){
-      // Reached end — stop
+    _vtPlaybackTimeCurrent+=frameStep;
+    if(_vtPlaybackTimeCurrent>=_vtPlaybackTimeEnd){
+      _vtPlaybackTimeCurrent=_vtPlaybackTimeEnd;
+      vtRenderPlaybackFrameAtTime(_vtPlaybackTimeCurrent);
       vtPlaybackPause();
       return;
     }
-    _vtPlaybackIdx++;
-    vtRenderPlaybackFrame(_vtPlaybackIdx);
+    vtRenderPlaybackFrameAtTime(_vtPlaybackTimeCurrent);
   },interval);
 }
 
@@ -2402,16 +4073,18 @@ function vtPlaybackPause(){
 }
 
 function vtPlaybackStep(delta){
-  if(!_vtPlaybackMode||!_vt3dPoints.length) return;
+  if(!_vtPlaybackMode) return;
   vtPlaybackPause();
-  const newIdx=Math.max(0,Math.min(_vt3dPoints.length-1,_vtPlaybackIdx+delta));
-  vtRenderPlaybackFrame(newIdx);
+  const frameStep=1/_vtPlaybackFPS;
+  const newTime=Math.max(_vtPlaybackTimeStart,Math.min(_vtPlaybackTimeEnd,_vtPlaybackTimeCurrent+delta*frameStep));
+  vtRenderPlaybackFrameAtTime(newTime);
 }
 
 function vtPlaybackScrub(val){
   if(!_vtPlaybackMode) return;
   vtPlaybackPause();
-  vtRenderPlaybackFrame(parseInt(val));
+  const time=_vtPlaybackTimeStart+parseInt(val)/1000;
+  vtRenderPlaybackFrameAtTime(Math.min(time,_vtPlaybackTimeEnd));
 }
 
 function vtPlaybackSetSpeed(val){
@@ -2423,35 +4096,55 @@ function vtPlaybackSetSpeed(val){
   }
 }
 
-// ---- Presentation Grid: Timeline Markers ----
+// ---- Presentation Grid: Timeline Markers (time-based) ----
 function vtBuildTimelineMarkers(){
   const container=document.getElementById('vt-pb-markers');
   if(!container) return;
   container.innerHTML='';
-  const total=_vt3dPoints.length;
-  if(total<2) return;
+  const duration=_vtPlaybackTimeEnd-_vtPlaybackTimeStart;
+  if(duration<=0) return;
 
-  // Helper: find nearest point index by (x,y)
-  function nearestIdx(x,y){
-    let bestI=0,bestD=Infinity;
-    _vt3dPoints.forEach((p,i)=>{
+  // Helper: find time of nearest 3D point by (x,y), return time
+  function nearestTime(x,y){
+    let bestT=_vtPlaybackTimeStart,bestD=Infinity;
+    _vt3dPoints.forEach(p=>{
       const d=Math.hypot(p.x-x,p.y-y);
-      if(d<bestD){bestD=d;bestI=i}
+      if(d<bestD){bestD=d;bestT=p.t}
     });
-    return bestI;
+    return bestT;
   }
 
-  // Bounce markers (green=IN, red=OUT)
+  // Rally band markers (colored segments showing rally boundaries)
+  if(_vtRallies&&_vtRallies.length>1){
+    const colors=['rgba(79,136,250,.25)','rgba(166,135,252,.25)'];
+    _vtRallies.forEach((r,ri)=>{
+      if(!r.points||!r.points.length) return;
+      const rStart=r.points[0].t;
+      const rEnd=r.points[r.points.length-1].t;
+      const pctStart=((rStart-_vtPlaybackTimeStart)/duration)*100;
+      const pctEnd=((rEnd-_vtPlaybackTimeStart)/duration)*100;
+      const band=document.createElement('div');
+      band.className='pb-rally-band';
+      band.style.left=pctStart+'%';
+      band.style.width=Math.max(1,(pctEnd-pctStart))+'%';
+      band.style.background=colors[ri%colors.length];
+      band.dataset.tip='Rally '+(ri+1)+' ('+r.points.length+' pts)';
+      band.onclick=()=>{vtPlaybackPause();vtRenderPlaybackFrameAtTime(rStart)};
+      container.appendChild(band);
+    });
+  }
+
+  // Bounce markers — numbered
   if(_vtBatchBounces&&_vtBatchBounces.length){
-    _vtBatchBounces.forEach(b=>{
-      const idx=nearestIdx(b.x,b.y);
-      const pct=(idx/(total-1))*100;
+    _vtBatchBounces.forEach((b,bi)=>{
+      const t=nearestTime(b.x,b.y);
+      const pct=((t-_vtPlaybackTimeStart)/duration)*100;
       const m=document.createElement('div');
       m.className='pb-marker';
       m.style.left=pct+'%';
       m.style.background=b.in_court?'#4caf50':'#f44336';
-      m.dataset.tip=(b.in_court?'IN':'OUT')+' bounce';
-      m.onclick=()=>{vtPlaybackPause();vtRenderPlaybackFrame(idx)};
+      m.dataset.tip='B'+(bi+1)+' '+(b.in_court?'IN':'OUT');
+      m.onclick=()=>{vtPlaybackPause();vtRenderPlaybackFrameAtTime(t)};
       container.appendChild(m);
     });
   }
@@ -2459,36 +4152,36 @@ function vtBuildTimelineMarkers(){
   // Net crossing marker (blue)
   if(_vtTrajectory&&_vtTrajectory.net_crossing){
     const nc=_vtTrajectory.net_crossing;
-    const idx=nearestIdx(nc.x,nc.y);
-    const pct=(idx/(total-1))*100;
+    const t=nearestTime(nc.x,nc.y);
+    const pct=((t-_vtPlaybackTimeStart)/duration)*100;
     const m=document.createElement('div');
     m.className='pb-marker';
     m.style.left=pct+'%';
     m.style.background='#4f88fa';
     const speedStr=nc.speed_kmh?(' '+nc.speed_kmh.toFixed(0)+'km/h'):'';
     m.dataset.tip=(nc.clears_net?'Net clear':'Net fault')+speedStr;
-    m.onclick=()=>{vtPlaybackPause();vtRenderPlaybackFrame(idx)};
+    m.onclick=()=>{vtPlaybackPause();vtRenderPlaybackFrameAtTime(t)};
     container.appendChild(m);
   }
 
   // Landing point marker (orange)
   if(_vtTrajectory&&_vtTrajectory.landing_point){
     const lp=_vtTrajectory.landing_point;
-    const idx=nearestIdx(lp.x,lp.y);
-    const pct=(idx/(total-1))*100;
+    const t=nearestTime(lp.x,lp.y);
+    const pct=((t-_vtPlaybackTimeStart)/duration)*100;
     const m=document.createElement('div');
     m.className='pb-marker';
     m.style.left=pct+'%';
     m.style.background='#ff9800';
     const inC=lp.x>=0&&lp.x<=COURT_W&&lp.y>=0&&lp.y<=COURT_L;
     m.dataset.tip='Landing '+(inC?'IN':'OUT');
-    m.onclick=()=>{vtPlaybackPause();vtRenderPlaybackFrame(idx)};
+    m.onclick=()=>{vtPlaybackPause();vtRenderPlaybackFrameAtTime(t)};
     container.appendChild(m);
   }
 }
 
-// ---- Presentation Grid: Animated Minimap ----
-function vtDrawPlaybackMinimap(idx){
+// ---- Presentation Grid: Animated Minimap (time-based) ----
+function vtDrawPlaybackMinimapTime(time){
   const canvas=document.getElementById('vt-pg-minimap');
   if(!canvas) return;
   const ctx=canvas.getContext('2d');
@@ -2522,19 +4215,22 @@ function vtDrawPlaybackMinimap(idx){
   ctx.beginPath();ctx.moveTo(mx(CX),my(0));ctx.lineTo(mx(CX),my(0.4));ctx.stroke();
   ctx.beginPath();ctx.moveTo(mx(CX),my(COURT_L));ctx.lineTo(mx(CX),my(COURT_L-0.4));ctx.stroke();
 
-  // Trajectory trail (orange line from start to current idx)
-  if(_vt3dPoints.length>1&&idx>0){
+  // Find points up to current time
+  const nPts=vtPointsUpToTime(time);
+
+  // Trajectory trail (orange line from start to current time)
+  if(nPts>1){
     ctx.beginPath();
     ctx.moveTo(mx(_vt3dPoints[0].x),my(_vt3dPoints[0].y));
-    for(let i=1;i<=idx&&i<_vt3dPoints.length;i++){
+    for(let i=1;i<nPts;i++){
       ctx.lineTo(mx(_vt3dPoints[i].x),my(_vt3dPoints[i].y));
     }
     ctx.strokeStyle='rgba(255,165,0,.6)';ctx.lineWidth=2;ctx.stroke();
 
     // Fading dots for recent 10 points
-    const start=Math.max(0,idx-10);
-    for(let i=start;i<=idx;i++){
-      const alpha=0.2+0.8*((i-start)/Math.max(1,idx-start));
+    const start=Math.max(0,nPts-10);
+    for(let i=start;i<nPts;i++){
+      const alpha=0.2+0.8*((i-start)/Math.max(1,nPts-1-start));
       ctx.beginPath();
       ctx.arc(mx(_vt3dPoints[i].x),my(_vt3dPoints[i].y),3,0,Math.PI*2);
       ctx.fillStyle='rgba(255,165,0,'+alpha.toFixed(2)+')';
@@ -2542,50 +4238,60 @@ function vtDrawPlaybackMinimap(idx){
     }
   }
 
-  // Bounce markers (only those reached so far)
+  // Bounce markers — numbered, only those reached so far
   if(_vtBatchBounces&&_vtBatchBounces.length){
-    _vtBatchBounces.forEach(b=>{
-      let bestI=0,bestD=Infinity;
-      _vt3dPoints.forEach((p,i)=>{
+    _vtBatchBounces.forEach((b,bi)=>{
+      // Find nearest point time for this bounce
+      let bestT=Infinity;
+      _vt3dPoints.forEach(p=>{
         const d=Math.hypot(p.x-b.x,p.y-b.y);
-        if(d<bestD){bestD=d;bestI=i}
+        if(d<bestT){bestT=p.t}
       });
-      if(bestI>idx) return; // not reached yet
+      // More accurate: find by position
+      let nearestPt=null,bestD=Infinity;
+      _vt3dPoints.forEach(p=>{
+        const d=Math.hypot(p.x-b.x,p.y-b.y);
+        if(d<bestD){bestD=d;nearestPt=p}
+      });
+      if(!nearestPt||nearestPt.t>time+0.001) return; // not reached yet
+
       const bx=mx(b.x),by=my(b.y);
-      const color=b.in_court?'#4caf50':'#f44336';
-      const r=6;
-      ctx.beginPath();
-      ctx.moveTo(bx,by-r);ctx.lineTo(bx+r,by);
-      ctx.lineTo(bx,by+r);ctx.lineTo(bx-r,by);
-      ctx.closePath();
-      ctx.fillStyle=color;ctx.fill();
-      ctx.strokeStyle='rgba(255,255,255,.5)';ctx.lineWidth=1;ctx.stroke();
-      ctx.font='bold 8px Lato';ctx.fillStyle=color;
-      ctx.fillText(b.in_court?'IN':'OUT',bx+9,by+3);
+      // Numbered circle marker instead of colored diamond
+      ctx.beginPath();ctx.arc(bx,by,8,0,Math.PI*2);
+      ctx.fillStyle='rgba(255,255,255,.15)';ctx.fill();
+      ctx.strokeStyle='#fff';ctx.lineWidth=1.5;ctx.stroke();
+      ctx.font='bold 9px Lato';ctx.fillStyle='#fff';ctx.textAlign='center';
+      ctx.fillText('B'+(bi+1),bx,by+3);
+      ctx.textAlign='left';
     });
   }
 
-  // Landing point marker (only if reached)
+  // Landing point markers — numbered
   if(_vtTrajectory&&_vtTrajectory.landing_point){
     const lp=_vtTrajectory.landing_point;
-    let lpIdx=0,lpD=Infinity;
-    _vt3dPoints.forEach((p,i)=>{const d=Math.hypot(p.x-lp.x,p.y-lp.y);if(d<lpD){lpD=d;lpIdx=i}});
-    if(lpIdx<=idx){
+    let nearestPt=null,bestD=Infinity;
+    _vt3dPoints.forEach(p=>{const d=Math.hypot(p.x-lp.x,p.y-lp.y);if(d<bestD){bestD=d;nearestPt=p}});
+    if(nearestPt&&nearestPt.t<=time+0.001){
       const lx=mx(lp.x),ly=my(lp.y);
       const inCourt=lp.x>=0&&lp.x<=COURT_W&&lp.y>=0&&lp.y<=COURT_L;
-      const color=inCourt?'#4caf50':'#f44336';
-      ctx.beginPath();ctx.arc(lx,ly,8,0,Math.PI*2);
-      ctx.strokeStyle=color;ctx.lineWidth=2;ctx.stroke();
+      // Target circle
+      ctx.beginPath();ctx.arc(lx,ly,10,0,Math.PI*2);
+      ctx.strokeStyle=inCourt?'#4caf50':'#f44336';ctx.lineWidth=2;ctx.stroke();
       ctx.beginPath();ctx.arc(lx,ly,4,0,Math.PI*2);
-      ctx.fillStyle=color;ctx.fill();
-      ctx.font='bold 9px Lato';ctx.fillStyle=color;
-      ctx.fillText(inCourt?'IN':'OUT',lx+11,ly+3);
+      ctx.fillStyle=inCourt?'#4caf50':'#f44336';ctx.fill();
+      // Distance from nearest line
+      const distBaseline=Math.min(lp.y, Math.abs(COURT_L-lp.y));
+      const distSideline=Math.min(lp.x, Math.abs(COURT_W-lp.x));
+      const distLine=Math.min(distBaseline,distSideline);
+      ctx.font='bold 8px Lato';ctx.fillStyle='#fff';
+      ctx.fillText((inCourt?'IN':'OUT')+' '+Math.round(distLine*100)+'cm',lx+13,ly+3);
     }
   }
 
-  // Current ball position: red dot with glow
-  if(_vt3dPoints[idx]){
-    const pt=_vt3dPoints[idx];
+  // Current ball position: interpolated or nearest detection
+  const nearest=vtFindNearestPointByTime(time);
+  if(nearest&&nearest.dt<0.15){
+    const pt=nearest.pt;
     const bx=mx(pt.x),by=my(pt.y);
     // Glow
     const grd=ctx.createRadialGradient(bx,by,0,bx,by,14);
@@ -2595,13 +4301,49 @@ function vtDrawPlaybackMinimap(idx){
     ctx.beginPath();ctx.arc(bx,by,5,0,Math.PI*2);
     ctx.fillStyle='#fa4e4e';ctx.fill();
     ctx.strokeStyle='#fff';ctx.lineWidth=1.5;ctx.stroke();
+  } else if(nPts>0){
+    // Show last known position grayed out
+    const lastPt=_vt3dPoints[nPts-1];
+    const bx=mx(lastPt.x),by=my(lastPt.y);
+    ctx.beginPath();ctx.arc(bx,by,4,0,Math.PI*2);
+    ctx.fillStyle='rgba(180,180,180,.4)';ctx.fill();
+    ctx.strokeStyle='rgba(255,255,255,.3)';ctx.lineWidth=1;ctx.stroke();
   }
 }
 
-// ---- Presentation Grid: Per-Frame Stats ----
-function vtUpdatePerFrameStats(idx){
-  const pt=_vt3dPoints[idx];
-  if(!pt) return;
+// ---- Presentation Grid: Per-Frame Stats (time-based) ----
+function vtUpdatePerFrameStatsTime(time){
+  const nearest=vtFindNearestPointByTime(time);
+  const hasDetection=nearest&&nearest.dt<0.15;
+
+  const speedEl=document.getElementById('pg-speed-val');
+  const heightEl=document.getElementById('pg-height-val');
+  const posEl=document.getElementById('pg-pos-val');
+  const shotEl=document.getElementById('pg-shot-val');
+  const bounceEl=document.getElementById('pg-bounce-val');
+
+  if(!hasDetection){
+    // No detection near this time — show dashes
+    if(speedEl) speedEl.textContent='--';
+    if(heightEl) heightEl.textContent='--';
+    if(posEl) posEl.textContent='--';
+    if(shotEl) shotEl.textContent='--';
+    // Bounces still show progressive count
+    let bounceCount=0;
+    const totalBounces=_vtBatchBounces?_vtBatchBounces.length:0;
+    if(_vtBatchBounces){
+      _vtBatchBounces.forEach(b=>{
+        let nearP=null,bestD=Infinity;
+        _vt3dPoints.forEach(p=>{const d=Math.hypot(p.x-b.x,p.y-b.y);if(d<bestD){bestD=d;nearP=p}});
+        if(nearP&&nearP.t<=time+0.001) bounceCount++;
+      });
+    }
+    if(bounceEl) bounceEl.textContent=bounceCount+(totalBounces>0?(' / '+totalBounces):'');
+    return;
+  }
+
+  const idx=nearest.idx;
+  const pt=nearest.pt;
 
   // Speed: instantaneous from consecutive 3D points
   let speedKmh=0;
@@ -2611,7 +4353,6 @@ function vtUpdatePerFrameStats(idx){
     const dist=Math.sqrt(dx*dx+dy*dy+dz*dz);
     const dt=(pt.t!==undefined&&prev.t!==undefined)?(pt.t-prev.t):0.04;
     if(dt>0) speedKmh=(dist/dt)*3.6;
-    // Clamp unreasonable values
     if(speedKmh>300){
       if(_vtTrajectory&&_vtTrajectory.net_crossing&&_vtTrajectory.net_crossing.speed_kmh){
         speedKmh=_vtTrajectory.net_crossing.speed_kmh;
@@ -2624,52 +4365,62 @@ function vtUpdatePerFrameStats(idx){
   // Height
   const height=pt.z;
 
-  // Position (mirrored X for display consistency)
+  // Position (mirrored X)
   const posX=COURT_W-pt.x;
   const posY=pt.y;
 
-  // Shot label
-  let shotLabel='';
-  if(_vtTrajectory){
+  // Rally info: find which rally we're in
+  let rallyLabel='';
+  if(_vtRallies&&_vtRallies.length>0){
+    for(let ri=0;ri<_vtRallies.length;ri++){
+      const r=_vtRallies[ri];
+      if(r.points.length>0&&pt.t>=r.points[0].t-0.01&&pt.t<=r.points[r.points.length-1].t+0.01){
+        const shotCount=r.trajectory&&r.trajectory.strokes?r.trajectory.strokes.length:'-';
+        rallyLabel='Rally '+(ri+1)+' \u00b7 '+shotCount+' shots';
+        break;
+      }
+    }
+  }
+  if(!rallyLabel&&_vtTrajectory){
     if(_vtTrajectory.net_crossing){
-      shotLabel=_vtTrajectory.net_crossing.clears_net?'Net Clear':'Net Fault';
+      rallyLabel=_vtTrajectory.net_crossing.clears_net?'Net Clear':'Net Fault';
     }
     if(_vtTrajectory.landing_point){
       const lp=_vtTrajectory.landing_point;
       const inC=lp.x>=0&&lp.x<=COURT_W&&lp.y>=0&&lp.y<=COURT_L;
-      shotLabel+=(shotLabel?' / ':'')+(inC?'IN':'OUT');
-    }
-    if(_vtTrajectory.strokes&&_vtTrajectory.strokes.length>1){
-      shotLabel+=(shotLabel?' \u00b7 ':'')+_vtTrajectory.strokes.length+' strokes';
+      rallyLabel+=(rallyLabel?' / ':'')+(inC?'IN':'OUT');
     }
   }
 
-  // Progressive bounce count (only bounces reached up to current idx)
+  // Progressive bounce count up to current time
   let bounceCount=0;
   const totalBounces=_vtBatchBounces?_vtBatchBounces.length:0;
-  if(_vtBatchBounces&&_vtBatchBounces.length){
+  if(_vtBatchBounces){
     _vtBatchBounces.forEach(b=>{
-      let bestI=0,bestD=Infinity;
-      _vt3dPoints.forEach((p,i)=>{
-        const d=Math.hypot(p.x-b.x,p.y-b.y);
-        if(d<bestD){bestD=d;bestI=i}
-      });
-      if(bestI<=idx) bounceCount++;
+      let nearP=null,bestD=Infinity;
+      _vt3dPoints.forEach(p=>{const d=Math.hypot(p.x-b.x,p.y-b.y);if(d<bestD){bestD=d;nearP=p}});
+      if(nearP&&nearP.t<=time+0.001) bounceCount++;
     });
   }
 
-  // Update DOM elements
-  const speedEl=document.getElementById('pg-speed-val');
-  const heightEl=document.getElementById('pg-height-val');
-  const posEl=document.getElementById('pg-pos-val');
-  const shotEl=document.getElementById('pg-shot-val');
-  const bounceEl=document.getElementById('pg-bounce-val');
+  // Landing distance from nearest line
+  let landingInfo='';
+  if(totalBounces>0&&bounceCount>0){
+    const lastBounce=_vtBatchBounces[bounceCount-1];
+    const distBaseline=Math.min(lastBounce.y,Math.abs(COURT_L-lastBounce.y));
+    const distSideline=Math.min(lastBounce.x,Math.abs(COURT_W-lastBounce.x));
+    const distLine=Math.min(distBaseline,distSideline);
+    landingInfo=bounceCount+'/'+totalBounces+' ('+Math.round(distLine*100)+'cm)';
+  } else {
+    landingInfo=bounceCount+(totalBounces>0?(' / '+totalBounces):'');
+  }
 
+  // Update DOM
   if(speedEl) speedEl.textContent=speedKmh>0?speedKmh.toFixed(0):'--';
   if(heightEl) heightEl.textContent=height.toFixed(2);
   if(posEl) posEl.textContent='('+posX.toFixed(1)+', '+posY.toFixed(1)+')';
-  if(shotEl) shotEl.textContent=shotLabel||'--';
-  if(bounceEl) bounceEl.textContent=bounceCount+(totalBounces>0?(' / '+totalBounces):'');
+  if(shotEl) shotEl.textContent=rallyLabel||'--';
+  if(bounceEl) bounceEl.textContent=landingInfo;
 }
 
 // Keyboard shortcuts for playback
@@ -2689,16 +4440,496 @@ document.addEventListener('keydown',function(e){
   }
 });
 
+// ============================================================
+// ======== CALIBRATION PAGE ========
+// ============================================================
+
+let _calPoints=[];        // [{cam66:{x,y}, cam68:{x,y}}]
+let _calCurrentSide=null; // 'cam66'|'cam68' — waiting for click
+let _calPendingPt=null;   // partial point being built {cam66:{x,y}} before cam68 click
+let _calResults=null;     // calibration results from backend
+let _calFrameLoaded={cam66:false, cam68:false};
+let _calImgNatural={cam66:{w:1920,h:1080}, cam68:{w:1920,h:1080}};
+
+// Zoom & pan state per camera
+let _calZoom={cam66:1, cam68:1};         // 1x to 20x
+let _calPan={cam66:{x:0,y:0}, cam68:{x:0,y:0}};  // pixel offset in canvas space
+let _calDragging=null;   // {cam, startX, startY, panX0, panY0} during pan drag
+let _calDragMoved=false; // true if mouse moved during drag (suppress click)
+let _calEventsRegistered=false; // guard: prevent duplicate event listener registration
+
+// Get the object-fit:contain base transform for a camera
+function calGetBaseTransform(cam){
+  const idx=cam==='cam66'?0:1;
+  const canvas=document.getElementById(idx===0?'cal-canvas1':'cal-canvas2');
+  if(!canvas) return null;
+  const nat=_calImgNatural[cam];
+  const imgAspect=nat.w/nat.h;
+  const canvasAspect=canvas.width/canvas.height;
+  let renderW,renderH,offsetX,offsetY;
+  if(imgAspect>canvasAspect){
+    renderW=canvas.width;renderH=canvas.width/imgAspect;offsetX=0;offsetY=(canvas.height-renderH)/2;
+  } else {
+    renderH=canvas.height;renderW=canvas.height*imgAspect;offsetX=(canvas.width-renderW)/2;offsetY=0;
+  }
+  return {renderW,renderH,offsetX,offsetY,natW:nat.w,natH:nat.h,canvasW:canvas.width,canvasH:canvas.height};
+}
+
+// Natural image pixel → canvas display pixel (with zoom+pan)
+function calNatToCanvas(cam,px,py){
+  const b=calGetBaseTransform(cam);
+  if(!b) return {x:0,y:0};
+  const zoom=_calZoom[cam];
+  const pan=_calPan[cam];
+  const baseX=b.offsetX+(px/b.natW)*b.renderW;
+  const baseY=b.offsetY+(py/b.natH)*b.renderH;
+  return {x:baseX*zoom+pan.x, y:baseY*zoom+pan.y};
+}
+
+// Canvas display pixel → natural image pixel (inverse of above)
+function calCanvasToNat(cam,cx,cy){
+  const b=calGetBaseTransform(cam);
+  if(!b) return null;
+  const zoom=_calZoom[cam];
+  const pan=_calPan[cam];
+  const baseX=(cx-pan.x)/zoom;
+  const baseY=(cy-pan.y)/zoom;
+  const px=((baseX-b.offsetX)/b.renderW)*b.natW;
+  const py=((baseY-b.offsetY)/b.renderH)*b.natH;
+  if(px<0||px>b.natW||py<0||py>b.natH) return null;
+  return {x:Math.round(px),y:Math.round(py)};
+}
+
+// Zoom centered on cursor position
+function calZoomAt(cam,cx,cy,deltaY){
+  const oldZoom=_calZoom[cam];
+  const factor=deltaY>0?1/1.15:1.15; // scroll down = zoom out, scroll up = zoom in
+  const newZoom=Math.max(1,Math.min(20,oldZoom*factor));
+  if(newZoom===oldZoom) return;
+  // Keep point under cursor stationary
+  _calPan[cam].x=cx-(cx-_calPan[cam].x)*(newZoom/oldZoom);
+  _calPan[cam].y=cy-(cy-_calPan[cam].y)*(newZoom/oldZoom);
+  _calZoom[cam]=newZoom;
+  calClampPan(cam);
+  calApplyZoomTransform(cam);
+  calRedrawMarkers();
+}
+
+// Clamp pan so at least 50px of image is visible
+function calClampPan(cam){
+  const b=calGetBaseTransform(cam);
+  if(!b) return;
+  const zoom=_calZoom[cam];
+  const margin=50;
+  // Compute image edges in canvas space
+  const imgRight=(b.offsetX+b.renderW)*zoom+_calPan[cam].x;
+  const imgLeft=b.offsetX*zoom+_calPan[cam].x;
+  const imgBottom=(b.offsetY+b.renderH)*zoom+_calPan[cam].y;
+  const imgTop=b.offsetY*zoom+_calPan[cam].y;
+  if(imgRight<margin) _calPan[cam].x+=margin-imgRight;
+  if(imgLeft>b.canvasW-margin) _calPan[cam].x-=imgLeft-(b.canvasW-margin);
+  if(imgBottom<margin) _calPan[cam].y+=margin-imgBottom;
+  if(imgTop>b.canvasH-margin) _calPan[cam].y-=imgTop-(b.canvasH-margin);
+}
+
+// Apply visual zoom to the img element + update zoom indicator
+function calApplyZoomTransform(cam){
+  const idx=cam==='cam66'?1:2;
+  const img=document.getElementById('cal-img'+idx);
+  const ind=document.getElementById('cal-zoom-ind'+idx);
+  const txt=document.getElementById('cal-zoom-txt'+idx);
+  const zoom=_calZoom[cam];
+  const pan=_calPan[cam];
+  if(img){
+    if(zoom<=1.001){
+      // Default: object-fit:contain
+      img.style.position='';
+      img.style.left='';
+      img.style.top='';
+      img.style.width='100%';
+      img.style.height='100%';
+      img.style.objectFit='contain';
+    } else {
+      // Zoomed: absolute position matching canvas coordinate system
+      const b=calGetBaseTransform(cam);
+      if(b){
+        img.style.position='absolute';
+        img.style.objectFit='fill';
+        img.style.width=(b.renderW*zoom)+'px';
+        img.style.height=(b.renderH*zoom)+'px';
+        img.style.left=(b.offsetX*zoom+pan.x)+'px';
+        img.style.top=(b.offsetY*zoom+pan.y)+'px';
+      }
+    }
+  }
+  if(ind&&txt){
+    if(zoom>1.01){
+      ind.style.display='block';
+      txt.textContent=zoom.toFixed(1)+'x';
+    } else {
+      ind.style.display='none';
+    }
+  }
+}
+
+// Reset zoom to 1x
+function calResetZoom(cam){
+  _calZoom[cam]=1;
+  _calPan[cam]={x:0,y:0};
+  calApplyZoomTransform(cam);
+  calRedrawMarkers();
+}
+
+function calInit(){
+  // Populate video dropdowns from _vtVideos (shared with Video Test)
+  const s1=document.getElementById('cal-vid1');
+  const s2=document.getElementById('cal-vid2');
+  if(!s1||!s2) return;
+  s1.innerHTML='<option value="">-- select --</option>';
+  s2.innerHTML='<option value="">-- select --</option>';
+  (_vtVideos||[]).forEach(v=>{
+    s1.innerHTML+='<option value="'+v.filename+'">'+v.filename+'</option>';
+    s2.innerHTML+='<option value="'+v.filename+'">'+v.filename+'</option>';
+  });
+  // Setup canvas click + zoom/pan handlers (register only once)
+  if(!_calEventsRegistered){
+    _calEventsRegistered=true;
+    ['cal-canvas1','cal-canvas2'].forEach((cid,idx)=>{
+      const c=document.getElementById(cid);
+      const cam=idx===0?'cam66':'cam68';
+      if(!c) return;
+
+      // Click to mark points
+      c.addEventListener('click', e=>calCanvasClick(e, cam));
+
+      // Wheel zoom
+      c.addEventListener('wheel', e=>{
+        e.preventDefault();
+        if(!_calFrameLoaded[cam]) return;
+        const rect=c.getBoundingClientRect();
+        const cx=(e.clientX-rect.left)*(c.width/rect.width);
+        const cy=(e.clientY-rect.top)*(c.height/rect.height);
+        calZoomAt(cam,cx,cy,e.deltaY);
+      }, {passive:false});
+
+      // Pan: middle-click drag or Ctrl+left-click drag
+      c.addEventListener('mousedown', e=>{
+        if(!_calFrameLoaded[cam]) return;
+        if(e.button===1||(e.button===0&&e.ctrlKey)){
+          e.preventDefault();
+          _calDragging={cam:cam, startX:e.clientX, startY:e.clientY,
+                        panX0:_calPan[cam].x, panY0:_calPan[cam].y};
+          _calDragMoved=false;
+          c.style.cursor='grabbing';
+        }
+      });
+
+      // Prevent default middle-click scrolling
+      c.addEventListener('auxclick', e=>{ if(e.button===1) e.preventDefault(); });
+    });
+
+    // Global mousemove/mouseup for pan dragging
+    document.addEventListener('mousemove', e=>{
+      if(!_calDragging) return;
+      const dx=e.clientX-_calDragging.startX;
+      const dy=e.clientY-_calDragging.startY;
+      if(Math.abs(dx)>3||Math.abs(dy)>3) _calDragMoved=true;
+      // Scale mouse movement by canvas/rect ratio for accurate panning
+      const cam=_calDragging.cam;
+      const idx=cam==='cam66'?0:1;
+      const c=document.getElementById(idx===0?'cal-canvas1':'cal-canvas2');
+      const rect=c?c.getBoundingClientRect():{width:1,height:1};
+      const scaleX=c?c.width/rect.width:1;
+      const scaleY=c?c.height/rect.height:1;
+      _calPan[cam].x=_calDragging.panX0+dx*scaleX;
+      _calPan[cam].y=_calDragging.panY0+dy*scaleY;
+      calClampPan(cam);
+      calApplyZoomTransform(cam);
+      calRedrawMarkers();
+    });
+    document.addEventListener('mouseup', e=>{
+      if(!_calDragging) return;
+      const cam=_calDragging.cam;
+      const idx=cam==='cam66'?0:1;
+      const c=document.getElementById(idx===0?'cal-canvas1':'cal-canvas2');
+      if(c) c.style.cursor='crosshair';
+      _calDragging=null;
+      // Reset _calDragMoved after a short delay so click event sees it
+      setTimeout(()=>{ _calDragMoved=false; },50);
+    });
+  }
+}
+
+function calLoadFrames(){
+  const vid1=document.getElementById('cal-vid1').value;
+  const vid2=document.getElementById('cal-vid2').value;
+  const time=parseFloat(document.getElementById('cal-frame-time').value)||1.0;
+  if(!vid1||!vid2){
+    document.getElementById('cal-status').textContent='Select both camera videos';
+    return;
+  }
+
+  const img1=document.getElementById('cal-img1');
+  const img2=document.getElementById('cal-img2');
+  img1.src='/api/video-preview/frame?filename='+encodeURIComponent(vid1)+'&time='+time;
+  img2.src='/api/video-preview/frame?filename='+encodeURIComponent(vid2)+'&time='+time;
+
+  img1.onload=function(){
+    _calFrameLoaded.cam66=true;
+    _calImgNatural.cam66={w:img1.naturalWidth,h:img1.naturalHeight};
+    calResizeCanvas('cal-canvas1','cal-panel1');
+    document.getElementById('cal-hint1').textContent='Click to mark point';
+  };
+  img2.onload=function(){
+    _calFrameLoaded.cam68=true;
+    _calImgNatural.cam68={w:img2.naturalWidth,h:img2.naturalHeight};
+    calResizeCanvas('cal-canvas2','cal-panel2');
+    document.getElementById('cal-hint2').textContent='Click to mark point';
+  };
+
+  // Reset zoom/pan when loading new frames
+  calResetZoom('cam66');
+  calResetZoom('cam68');
+
+  _calCurrentSide='cam66';
+  document.getElementById('cal-hint1').textContent='← Click here first';
+  document.getElementById('cal-hint2').textContent='Then click here';
+  document.getElementById('cal-status').textContent='Frames loaded. Click matching points. Scroll to zoom, Ctrl+drag to pan.';
+}
+
+function calResizeCanvas(canvasId,panelId){
+  const canvas=document.getElementById(canvasId);
+  const panel=document.getElementById(panelId);
+  if(!canvas||!panel) return;
+  canvas.width=panel.clientWidth;
+  canvas.height=panel.clientHeight;
+  // Re-apply zoom transform for corresponding camera
+  const cam=canvasId==='cal-canvas1'?'cam66':'cam68';
+  calApplyZoomTransform(cam);
+  calRedrawMarkers();
+}
+
+function calCanvasClick(e, cam){
+  if(!_calFrameLoaded[cam]) return;
+  // Skip if this was a pan drag
+  if(_calDragMoved) return;
+
+  const canvas=e.target;
+  const rect=canvas.getBoundingClientRect();
+  const cx=(e.clientX-rect.left)*(canvas.width/rect.width);
+  const cy=(e.clientY-rect.top)*(canvas.height/rect.height);
+
+  // Convert canvas pixel to natural image pixel (handles zoom+pan)
+  const nat=calCanvasToNat(cam,cx,cy);
+  if(!nat) return; // outside image bounds
+
+  if(cam==='cam66'){
+    // Start new pair
+    _calPendingPt={cam66:{x:nat.x,y:nat.y}};
+    document.getElementById('cal-hint1').textContent='✓ Point marked';
+    document.getElementById('cal-hint2').textContent='← Now click matching point';
+    calRedrawMarkers();
+  } else if(cam==='cam68'&&_calPendingPt&&_calPendingPt.cam66){
+    // Complete the pair
+    _calPendingPt.cam68={x:nat.x,y:nat.y};
+    _calPoints.push({cam66:_calPendingPt.cam66, cam68:_calPendingPt.cam68});
+    _calPendingPt=null;
+    calRedrawMarkers();
+    calRenderPointsTable();
+    document.getElementById('cal-hint1').textContent='← Click here for next point';
+    document.getElementById('cal-hint2').textContent='Then click here';
+    document.getElementById('cal-status').textContent=_calPoints.length+' pairs marked. Min 4 needed.';
+    document.getElementById('cal-run-btn').disabled=_calPoints.length<4;
+  }
+}
+
+function calRedrawMarkers(){
+  ['cam66','cam68'].forEach((cam,idx)=>{
+    const canvas=document.getElementById(idx===0?'cal-canvas1':'cal-canvas2');
+    if(!canvas) return;
+    const ctx=canvas.getContext('2d');
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+
+    const zoom=_calZoom[cam];
+    // Scale marker size inversely with zoom so they don't become huge
+    const r=Math.max(4, 8/Math.sqrt(zoom));
+    const rInner=Math.max(2, 3/Math.sqrt(zoom));
+    const fontSize=Math.max(7, Math.round(10/Math.sqrt(zoom)));
+
+    // Draw completed point pairs
+    _calPoints.forEach((p,i)=>{
+      const pt=p[cam];
+      if(!pt) return;
+      const c=calNatToCanvas(cam,pt.x,pt.y);
+      // Skip if off-canvas
+      if(c.x<-20||c.x>canvas.width+20||c.y<-20||c.y>canvas.height+20) return;
+      const color=cam==='cam66'?'#4f88fa':'#fa4e4e';
+      ctx.beginPath();ctx.arc(c.x,c.y,r,0,Math.PI*2);
+      ctx.strokeStyle=color;ctx.lineWidth=2;ctx.stroke();
+      ctx.beginPath();ctx.arc(c.x,c.y,rInner,0,Math.PI*2);
+      ctx.fillStyle=color;ctx.fill();
+      ctx.font='bold '+fontSize+'px Lato';ctx.fillStyle='#fff';ctx.textAlign='center';
+      ctx.fillText(''+(i+1),c.x,c.y-r-3);
+      ctx.textAlign='left';
+    });
+
+    // Draw pending point
+    if(_calPendingPt&&_calPendingPt[cam]){
+      const pt=_calPendingPt[cam];
+      const c=calNatToCanvas(cam,pt.x,pt.y);
+      const rPend=Math.max(5, 10/Math.sqrt(zoom));
+      ctx.beginPath();ctx.arc(c.x,c.y,rPend,0,Math.PI*2);
+      ctx.strokeStyle='#ff9800';ctx.lineWidth=2;ctx.setLineDash([4,3]);ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.beginPath();ctx.arc(c.x,c.y,rInner,0,Math.PI*2);
+      ctx.fillStyle='#ff9800';ctx.fill();
+      ctx.font='bold '+fontSize+'px Lato';ctx.fillStyle='#ff9800';ctx.textAlign='center';
+      ctx.fillText('?',c.x,c.y-rPend-3);
+      ctx.textAlign='left';
+    }
+  });
+}
+
+function calRenderPointsTable(){
+  const tbody=document.getElementById('cal-points-tbody');
+  if(!tbody) return;
+  tbody.innerHTML=_calPoints.map((p,i)=>`<tr>
+    <td>${i+1}</td>
+    <td>(${p.cam66.x}, ${p.cam66.y})</td>
+    <td>(${p.cam68.x}, ${p.cam68.y})</td>
+    <td><button class="cal-del-btn" onclick="calDeletePoint(${i})">✕</button></td>
+  </tr>`).join('');
+  document.getElementById('cal-pair-count').textContent='('+_calPoints.length+' pairs)';
+  document.getElementById('cal-run-btn').disabled=_calPoints.length<4;
+}
+
+function calDeletePoint(idx){
+  _calPoints.splice(idx,1);
+  calRenderPointsTable();
+  calRedrawMarkers();
+  document.getElementById('cal-status').textContent=_calPoints.length+' pairs. Min 4 needed.';
+}
+
+async function calRunCalibration(){
+  if(_calPoints.length<4){
+    document.getElementById('cal-status').textContent='Need at least 4 point pairs';
+    return;
+  }
+
+  const vid1=document.getElementById('cal-vid1').value;
+  const vid2=document.getElementById('cal-vid2').value;
+  const time=parseFloat(document.getElementById('cal-frame-time').value)||1.0;
+
+  document.getElementById('cal-status').textContent='Running calibration...';
+  document.getElementById('cal-run-btn').disabled=true;
+
+  try{
+    const resp=await fetch('/api/calibration/run-from-points',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        points:_calPoints,
+        cam66_video:vid1,
+        cam68_video:vid2,
+        frame_time:time
+      })
+    });
+    const data=await resp.json();
+    if(data.error){
+      document.getElementById('cal-status').textContent='Error: '+data.error;
+      document.getElementById('cal-run-btn').disabled=false;
+      return;
+    }
+    _calResults=data;
+    calShowResults(data);
+    document.getElementById('cal-status').textContent='Calibration complete!';
+  }catch(e){
+    document.getElementById('cal-status').textContent='Error: '+e.message;
+  }
+  document.getElementById('cal-run-btn').disabled=false;
+}
+
+function calShowResults(data){
+  const panel=document.getElementById('cal-results');
+  panel.classList.add('show');
+
+  const pos1=data.cam66_position||data.cam66_pos||[0,0,0];
+  const pos2=data.cam68_position||data.cam68_pos||[0,0,0];
+
+  document.getElementById('cal-res-pos1').textContent=
+    '['+pos1.map(v=>v.toFixed(3)).join(', ')+']';
+  document.getElementById('cal-res-pos2').textContent=
+    '['+pos2.map(v=>v.toFixed(3)).join(', ')+']';
+
+  // reprojection_error can be a dict {cam66:N, cam68:N} or a number
+  let reprErr=data.reprojection_error||data.reproj_error||0;
+  if(typeof reprErr==='object'&&reprErr!==null){
+    const vals=Object.values(reprErr).filter(v=>typeof v==='number');
+    reprErr=vals.length?vals.reduce((a,b)=>a+b,0)/vals.length:0;
+  }
+  document.getElementById('cal-res-error').textContent=
+    Number(reprErr).toFixed(2)+' px';
+
+  const baseline=Math.sqrt(
+    Math.pow(pos1[0]-pos2[0],2)+
+    Math.pow(pos1[1]-pos2[1],2)+
+    Math.pow(pos1[2]-pos2[2],2)
+  );
+  document.getElementById('cal-res-baseline').textContent=baseline.toFixed(2)+' m';
+
+  document.getElementById('cal-apply-btn').disabled=false;
+  document.getElementById('cal-export-btn').disabled=false;
+}
+
+async function calApplyResults(){
+  if(!_calResults) return;
+  const pos1=_calResults.cam66_position||_calResults.cam66_pos;
+  const pos2=_calResults.cam68_position||_calResults.cam68_pos;
+  if(!pos1||!pos2){
+    document.getElementById('cal-status').textContent='No results to apply';
+    return;
+  }
+
+  document.getElementById('cal-status').textContent='Applying to config...';
+  try{
+    const resp=await fetch('/api/calibration/apply',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({cam66_position:pos1, cam68_position:pos2})
+    });
+    const data=await resp.json();
+    if(data.error){
+      document.getElementById('cal-status').textContent='Error: '+data.error;
+      return;
+    }
+    document.getElementById('cal-status').textContent='✓ Applied! Config updated. Re-run Video Test for updated Z values.';
+  }catch(e){
+    document.getElementById('cal-status').textContent='Error: '+e.message;
+  }
+}
+
+function calExportJSON(){
+  if(!_calResults) return;
+  const blob=new Blob([JSON.stringify(_calResults,null,2)],{type:'application/json'});
+  const a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download='camera_calibration_result.json';
+  a.click();
+}
+
 // ---- Init ----
 // Initialize dual sliders immediately
 vtInitDualSliders();
 
-// Initialize 3D scene when Video Test page becomes visible
+// Initialize 3D scene and calibration when pages become visible
 const _origSwitchPage=switchPage;
 switchPage=function(page){
   _origSwitchPage(page);
   if(page==='video-test'){
     setTimeout(vtInit3D,100);
+  }
+  if(page==='calibration'){
+    setTimeout(calInit,100);
   }
 };
 </script>

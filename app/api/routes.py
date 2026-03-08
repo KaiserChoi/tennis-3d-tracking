@@ -1,6 +1,7 @@
 """FastAPI routes: REST API + SSE stream + Web Dashboard."""
 
 import asyncio
+import datetime
 import json
 import logging
 from pathlib import Path
@@ -18,6 +19,7 @@ router = APIRouter()
 # The orchestrator instance is injected via app.state at startup.
 _orch: Orchestrator | None = None
 _UPLOAD_DIR = Path("uploads")
+_ANNOTATIONS_DIR = Path("annotations")
 _VIDEO_EXTS = {".mp4", ".avi", ".mkv", ".mov", ".wmv", ".flv", ".webm"}
 
 
@@ -154,6 +156,100 @@ async def calibration_status():
         }
     except Exception as e:
         return {"calibrated": False, "error": str(e)}
+
+
+@router.post("/api/calibration/run-from-points")
+async def run_calibration_from_points(request: Request):
+    """Run calibration using manually marked point pairs from the UI.
+
+    Expects JSON body:
+    {
+        "points": [{"cam66": [px, py], "cam68": [px, py]}, ...],
+        "cam66_video": "filename.mp4",
+        "cam68_video": "filename.mp4",
+        "frame_time": 5.0
+    }
+
+    Uses the point correspondences (assumed ground-level, z=0) to run
+    PnP camera pose estimation for each camera.
+    """
+    try:
+        body = await request.json()
+        points = body.get("points", [])
+        vid1 = body.get("cam66_video", "")
+        vid2 = body.get("cam68_video", "")
+        frame_time = float(body.get("frame_time", 1.0))
+
+        if len(points) < 4:
+            return {"error": "Need at least 4 point pairs"}
+
+        from app.calibration import calibrate_from_point_pairs
+
+        result = calibrate_from_point_pairs(
+            point_pairs=points,
+            cam66_video=str(_UPLOAD_DIR / vid1),
+            cam68_video=str(_UPLOAD_DIR / vid2),
+            frame_time=frame_time,
+        )
+        return result
+    except ImportError:
+        return {"error": "calibrate_from_point_pairs not available in app.calibration"}
+    except Exception as e:
+        logger.exception("Point-based calibration failed")
+        return {"error": str(e)}
+
+
+@router.post("/api/calibration/apply")
+async def apply_calibration(request: Request):
+    """Apply calibrated camera positions to config.yaml.
+
+    Expects JSON body:
+    {
+        "cam66_position": [x, y, z],
+        "cam68_position": [x, y, z]
+    }
+
+    Updates config.yaml camera positions and sets use_calibrated_positions: true.
+    """
+    import yaml
+
+    try:
+        body = await request.json()
+        pos1 = body.get("cam66_position")
+        pos2 = body.get("cam68_position")
+        if not pos1 or not pos2:
+            return {"error": "Both cam66_position and cam68_position required"}
+
+        config_path = Path("config.yaml")
+        if not config_path.exists():
+            return {"error": "config.yaml not found"}
+
+        with open(config_path, "r", encoding="utf-8") as f:
+            config = yaml.safe_load(f) or {}
+
+        # Update camera positions
+        if "cameras" not in config:
+            config["cameras"] = {}
+        if "cam66" not in config["cameras"]:
+            config["cameras"]["cam66"] = {}
+        if "cam68" not in config["cameras"]:
+            config["cameras"]["cam68"] = {}
+
+        config["cameras"]["cam66"]["position_3d"] = [float(v) for v in pos1]
+        config["cameras"]["cam68"]["position_3d"] = [float(v) for v in pos2]
+
+        # Enable calibrated positions
+        if "calibration" not in config:
+            config["calibration"] = {}
+        config["calibration"]["use_calibrated_positions"] = True
+
+        with open(config_path, "w", encoding="utf-8") as f:
+            yaml.dump(config, f, default_flow_style=False, allow_unicode=True)
+
+        return {"status": "ok", "message": "Config updated with calibrated positions"}
+    except Exception as e:
+        logger.exception("Apply calibration failed")
+        return {"error": str(e)}
 
 
 # ---- Pipeline control ----
@@ -460,6 +556,40 @@ async def clear_video_test_detections(request: Request):
     return {"status": "ok"}
 
 
+@router.get("/api/video-test/detections/stream")
+async def video_test_detections_stream():
+    """SSE stream of new detections during video test processing.
+
+    Sends incremental detection batches at ~10Hz until processing completes.
+    Each message is JSON with camera_name -> [new detections] or {done: true}.
+    """
+    orch = _get_orch()
+
+    async def generator():
+        cursors: dict[str, int] = {}
+        while True:
+            new_dets = orch.get_video_test_detections_since(cursors)
+            if new_dets:
+                for cam, dets in new_dets.items():
+                    cursors[cam] = cursors.get(cam, 0) + len(dets)
+                yield f"data: {json.dumps(new_dets)}\n\n"
+            # Check if processing is done
+            status = orch.get_video_test_status()
+            state = status.get("state", "idle")
+            if state in ("idle", "error", "completed"):
+                # Send final batch + done signal
+                final_dets = orch.get_video_test_detections_since(cursors)
+                if final_dets:
+                    for cam, dets in final_dets.items():
+                        cursors[cam] = cursors.get(cam, 0) + len(dets)
+                    yield f"data: {json.dumps(final_dets)}\n\n"
+                yield f"data: {json.dumps({'done': True, 'state': state})}\n\n"
+                break
+            await asyncio.sleep(0.1)
+
+    return StreamingResponse(generator(), media_type="text/event-stream")
+
+
 @router.post("/api/video-test/compute-3d")
 async def compute_3d():
     """Compute 3D positions from two cameras' detections via triangulation."""
@@ -487,3 +617,66 @@ async def compute_trajectory():
     if "error" in result:
         raise HTTPException(400, result["error"])
     return result
+
+
+# ---------------------------------------------------------------------------
+# Annotation save / list / load
+# ---------------------------------------------------------------------------
+
+
+@router.post("/api/annotations/save")
+async def save_annotation(request: Request):
+    """Save edited annotation data to a JSON file in annotations/ directory."""
+    body = await request.json()
+    _ANNOTATIONS_DIR.mkdir(parents=True, exist_ok=True)
+
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    cam1 = body.get("metadata", {}).get("cam1_video", "unknown")
+    stem = Path(cam1).stem
+    filename = f"annotation_{stem}_{ts}.json"
+
+    filepath = _ANNOTATIONS_DIR / filename
+    with open(filepath, "w", encoding="utf-8") as f:
+        json.dump(body, f, indent=2, ensure_ascii=False)
+
+    return {"status": "ok", "filename": filename, "path": str(filepath)}
+
+
+@router.get("/api/annotations/list")
+async def list_annotations():
+    """List all saved annotation files with basic metadata."""
+    _ANNOTATIONS_DIR.mkdir(parents=True, exist_ok=True)
+    annotations = []
+    for fpath in sorted(_ANNOTATIONS_DIR.iterdir(), reverse=True):
+        if fpath.suffix != ".json":
+            continue
+        try:
+            with open(fpath, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            meta = data.get("metadata", {})
+            annotations.append({
+                "filename": fpath.name,
+                "cam1_video": meta.get("cam1_video", ""),
+                "cam2_video": meta.get("cam2_video", ""),
+                "match_count": len(data.get("matches", [])),
+                "bounce_count": len(data.get("bounces", [])),
+                "rally_markers": len(data.get("rally_markers", [])),
+                "saved_at": meta.get("saved_at", ""),
+            })
+        except Exception:
+            annotations.append({"filename": fpath.name, "error": "parse failed"})
+    return {"annotations": annotations}
+
+
+@router.get("/api/annotations/load")
+async def load_annotation(filename: str):
+    """Load a specific annotation file by filename."""
+    filepath = _ANNOTATIONS_DIR / filename
+    if not filepath.exists():
+        raise HTTPException(404, f"Annotation not found: {filename}")
+    # Security: ensure file is inside annotations dir
+    if not filepath.resolve().parent == _ANNOTATIONS_DIR.resolve():
+        raise HTTPException(400, "Invalid filename")
+    with open(filepath, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    return data

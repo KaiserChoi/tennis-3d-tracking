@@ -517,6 +517,236 @@ def run_calibration(
     return output
 
 
+def calibrate_from_point_pairs(
+    point_pairs: list[dict],
+    cam66_video: str,
+    cam68_video: str,
+    frame_time: float = 1.0,
+) -> dict:
+    """Calibrate cameras using manually marked point correspondences.
+
+    Each point pair represents the same ground-level (z=0) object seen
+    in both camera images. Uses solvePnP to find camera pose for each
+    camera, then cross-validates the pair.
+
+    The approach works as follows:
+    1. From each pair, the user marks pixel coordinates in both camera images
+    2. We need the 3D world coordinates of the same points
+    3. Since the user only provides pixel pairs (no world coords), we use the
+       existing homography to project cam66 pixels → world coordinates
+    4. Then use those world coordinates with cam68 pixels in solvePnP
+
+    For a cleaner approach with ≥12 points, we use the existing CameraCalibrator
+    flow if the points can be matched to known court keypoints.
+
+    Args:
+        point_pairs: List of dicts with 'cam66' and 'cam68' keys,
+                     each containing [pixel_x, pixel_y].
+        cam66_video: Path to cam66 video file (for frame extraction).
+        cam68_video: Path to cam68 video file (for frame extraction).
+        frame_time: Timestamp for frame extraction.
+
+    Returns:
+        Dict with cam66_position, cam68_position, reprojection_error.
+    """
+    if len(point_pairs) < 4:
+        raise ValueError(f"Need at least 4 point pairs, got {len(point_pairs)}")
+
+    # Extract frames to get image dimensions
+    cap1 = cv2.VideoCapture(cam66_video)
+    cap2 = cv2.VideoCapture(cam68_video)
+
+    if not cap1.isOpened() or not cap2.isOpened():
+        cap1.release()
+        cap2.release()
+        raise ValueError("Cannot open one or both video files")
+
+    fps1 = cap1.get(cv2.CAP_PROP_FPS) or 30
+    fps2 = cap2.get(cv2.CAP_PROP_FPS) or 30
+    cap1.set(cv2.CAP_PROP_POS_FRAMES, int(frame_time * fps1))
+    cap2.set(cv2.CAP_PROP_POS_FRAMES, int(frame_time * fps2))
+    ret1, frame1 = cap1.read()
+    ret2, frame2 = cap2.read()
+    cap1.release()
+    cap2.release()
+
+    if not ret1 or not ret2 or frame1 is None or frame2 is None:
+        raise ValueError("Cannot read frames at given time")
+
+    h1, w1 = frame1.shape[:2]
+    h2, w2 = frame2.shape[:2]
+    img_size_1 = (w1, h1)
+    img_size_2 = (w2, h2)
+
+    logger.info(
+        "Point-based calibration: %d pairs, cam66=%dx%d, cam68=%dx%d",
+        len(point_pairs), w1, h1, w2, h2,
+    )
+
+    # Load existing homography for cam66 to project pixels → world coordinates
+    # This gives us 3D world coords (z=0) for each user-marked point
+    homography_path = Path("src/homography_matrices.json")
+    if not homography_path.exists():
+        raise ValueError("src/homography_matrices.json not found — needed for pixel→world projection")
+
+    with open(homography_path, "r", encoding="utf-8") as f:
+        hom_data = json.load(f)
+
+    H_cam66_i2w = np.array(hom_data["cam66"]["H_image_to_world"])
+    H_cam68_i2w = np.array(hom_data["cam68"]["H_image_to_world"])
+
+    # For each point pair, project cam66 pixel → world (x, y, z=0)
+    # and also project cam68 pixel → world for cross-validation
+    world_points_from_cam66 = []
+    world_points_from_cam68 = []
+    cam66_pixels = []
+    cam68_pixels = []
+
+    for pair in point_pairs:
+        px66 = pair["cam66"]
+        px68 = pair["cam68"]
+
+        if isinstance(px66, dict):
+            px66 = [px66["x"], px66["y"]]
+        if isinstance(px68, dict):
+            px68 = [px68["x"], px68["y"]]
+
+        cam66_pixels.append(px66)
+        cam68_pixels.append(px68)
+
+        # Project cam66 pixel → world
+        pt_h = np.array([px66[0], px66[1], 1.0])
+        w66 = H_cam66_i2w @ pt_h
+        w66 = w66[:2] / w66[2]
+        world_points_from_cam66.append([w66[0], w66[1], 0.0])
+
+        # Project cam68 pixel → world
+        pt_h = np.array([px68[0], px68[1], 1.0])
+        w68 = H_cam68_i2w @ pt_h
+        w68 = w68[:2] / w68[2]
+        world_points_from_cam68.append([w68[0], w68[1], 0.0])
+
+    # Average the two world projections for each point (better estimate)
+    world_points_avg = []
+    correspondence_errors = []
+    for i in range(len(point_pairs)):
+        w66 = np.array(world_points_from_cam66[i][:2])
+        w68 = np.array(world_points_from_cam68[i][:2])
+        avg = (w66 + w68) / 2
+        err = float(np.linalg.norm(w66 - w68))
+        correspondence_errors.append(err)
+        world_points_avg.append([avg[0], avg[1], 0.0])
+
+    mean_correspondence_error = float(np.mean(correspondence_errors))
+    logger.info(
+        "Mean correspondence error (cam66 vs cam68 world projection): %.4f m",
+        mean_correspondence_error,
+    )
+
+    # Now run solvePnP for each camera using averaged world coords
+    obj_points = np.array(world_points_avg, dtype=np.float64).reshape(-1, 1, 3)
+    cam66_img_pts = np.array(cam66_pixels, dtype=np.float64).reshape(-1, 1, 2)
+    cam68_img_pts = np.array(cam68_pixels, dtype=np.float64).reshape(-1, 1, 2)
+
+    results = {}
+    for cam_name, img_pts, img_size in [
+        ("cam66", cam66_img_pts, img_size_1),
+        ("cam68", cam68_img_pts, img_size_2),
+    ]:
+        # Estimate intrinsics using camera matrix estimation
+        # For ≥6 points, use calibrateCamera; otherwise use solvePnP with estimated K
+        fx = img_size[0]  # rough initial focal length
+        K_init = np.array([
+            [fx, 0, img_size[0] / 2],
+            [0, fx, img_size[1] / 2],
+            [0, 0, 1],
+        ], dtype=np.float64)
+        dist_init = np.zeros(5, dtype=np.float64)
+
+        if len(point_pairs) >= 6:
+            # Use calibrateCamera for better intrinsic estimation
+            flags = cv2.CALIB_FIX_ASPECT_RATIO
+            ret, K, dist, rvecs, tvecs = cv2.calibrateCamera(
+                [obj_points.astype(np.float32)],
+                [img_pts.astype(np.float32)],
+                img_size,
+                None,
+                None,
+                flags=flags,
+            )
+            K_init = K
+            dist_init = dist
+            rvec_init = rvecs[0]
+            tvec_init = tvecs[0]
+
+            # Refine with solvePnP
+            success, rvec, tvec = cv2.solvePnP(
+                obj_points,
+                img_pts,
+                K_init,
+                dist_init,
+                rvec=rvec_init.copy(),
+                tvec=tvec_init.copy(),
+                useExtrinsicGuess=True,
+                flags=cv2.SOLVEPNP_ITERATIVE,
+            )
+        else:
+            # Fewer points: use solvePnP with estimated K
+            success, rvec, tvec = cv2.solvePnP(
+                obj_points,
+                img_pts,
+                K_init,
+                dist_init,
+                flags=cv2.SOLVEPNP_ITERATIVE,
+            )
+
+        if not success:
+            raise ValueError(f"solvePnP failed for {cam_name}")
+
+        R, _ = cv2.Rodrigues(rvec)
+        camera_position = (-R.T @ tvec).flatten()
+
+        # Reprojection error
+        projected, _ = cv2.projectPoints(obj_points, rvec, tvec, K_init, dist_init)
+        projected = projected.reshape(-1, 2)
+        errors = [float(np.linalg.norm(projected[i] - img_pts[i].flatten()))
+                  for i in range(len(projected))]
+        mean_err = float(np.mean(errors))
+
+        results[cam_name] = {
+            "camera_position": [round(float(c), 4) for c in camera_position],
+            "reprojection_error_px": round(mean_err, 3),
+            "K": K_init.tolist(),
+            "R": R.tolist(),
+            "rvec": rvec.flatten().tolist(),
+            "tvec": tvec.flatten().tolist(),
+        }
+
+        logger.info(
+            "[%s] Position: [%.3f, %.3f, %.3f], reproj: %.2f px",
+            cam_name, *camera_position, mean_err,
+        )
+
+    # Compute baseline
+    pos1 = np.array(results["cam66"]["camera_position"])
+    pos2 = np.array(results["cam68"]["camera_position"])
+    baseline = float(np.linalg.norm(pos2 - pos1))
+
+    return {
+        "cam66_position": results["cam66"]["camera_position"],
+        "cam68_position": results["cam68"]["camera_position"],
+        "reprojection_error": {
+            "cam66": results["cam66"]["reprojection_error_px"],
+            "cam68": results["cam68"]["reprojection_error_px"],
+        },
+        "baseline_m": round(baseline, 3),
+        "mean_correspondence_error_m": round(mean_correspondence_error, 4),
+        "n_point_pairs": len(point_pairs),
+        "cam66_details": results["cam66"],
+        "cam68_details": results["cam68"],
+    }
+
+
 def _update_homography_file(results: dict, homography_path: str) -> None:
     """Update homography_matrices.json with calibration-derived matrices.
 

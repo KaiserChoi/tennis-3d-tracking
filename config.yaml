@@ -1,28 +1,32 @@
+calibration:
+  path: src/camera_calibration.json
+  use_calibrated_positions: true
 cameras:
   cam66:
-    rtsp_url: "rtsp://admin:motion168@192.168.1.66:554/Streaming/Channels/101"
-    position_3d: [3.915, -5.21, 6.2]
-    homography_key: "cam66"
+    homography_key: cam66
+    position_3d:
+    - 3.7657
+    - -15.7273
+    - 7.4776
+    rtsp_url: rtsp://admin:motion168@192.168.1.66:554/Streaming/Channels/101
   cam68:
-    rtsp_url: "rtsp://admin:motion168@192.168.1.68:554/Streaming/Channels/101"
-    position_3d: [4.115, 28.97, 5.2]
-    homography_key: "cam68"
-
+    homography_key: cam68
+    position_3d:
+    - 5.8058
+    - 45.0351
+    - 10.2461
+    rtsp_url: rtsp://admin:motion168@192.168.1.68:554/Streaming/Channels/101
+homography:
+  path: src/homography_matrices.json
 model:
-  path: "model_weight/TrackNet_best.pt"
-  input_size: [288, 512]
+  device: cuda
   frames_in: 8
   frames_out: 8
+  input_size:
+  - 288
+  - 512
+  path: model_weight/TrackNet_best.pt
   threshold: 0.5
-  device: "cuda"
-
-homography:
-  path: "src/homography_matrices.json"
-
 server:
-  host: "0.0.0.0"
+  host: 0.0.0.0
   port: 8000
-
-calibration:
-  path: "src/camera_calibration.json"
-  use_calibrated_positions: false
