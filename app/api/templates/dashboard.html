@@ -823,22 +823,22 @@ function drawCourt(canvas,ballX,ballY,bounces){
   const ctx=canvas.getContext('2d'),W=canvas.width,H=canvas.height;
   const margin=12,cw=W-2*margin,ch=H-2*margin;
   const sx=cw/COURT_W,sy=ch/COURT_L;
-  function tx(x){return margin+x*sx}
+  function tx(x){return margin+(COURT_W-x)*sx}  // mirror X to match camera view
   function ty(y){return H-margin-y*sy}
 
   ctx.clearRect(0,0,W,H);
   ctx.fillStyle='#1a2e1a';ctx.fillRect(0,0,W,H);
   ctx.fillStyle='#2d5a3d';
-  ctx.fillRect(tx(0),ty(COURT_L),COURT_W*sx,COURT_L*sy);
+  ctx.fillRect(tx(COURT_W),ty(COURT_L),COURT_W*sx,COURT_L*sy);
   ctx.fillStyle='#346845';
-  ctx.fillRect(tx(0),ty(SRV_F),COURT_W*sx,(SRV_F-SRV_N)*sy);
+  ctx.fillRect(tx(COURT_W),ty(SRV_F),COURT_W*sx,(SRV_F-SRV_N)*sy);
 
   ctx.strokeStyle='#fff';ctx.lineWidth=1.5;
-  ctx.strokeRect(tx(0),ty(COURT_L),COURT_W*sx,COURT_L*sy);
-  ctx.beginPath();ctx.moveTo(tx(0),ty(NET_Y));ctx.lineTo(tx(COURT_W),ty(NET_Y));
+  ctx.strokeRect(tx(COURT_W),ty(COURT_L),COURT_W*sx,COURT_L*sy);
+  ctx.beginPath();ctx.moveTo(tx(COURT_W),ty(NET_Y));ctx.lineTo(tx(0),ty(NET_Y));
   ctx.strokeStyle='#ccc';ctx.lineWidth=2.5;ctx.stroke();
   ctx.strokeStyle='#fff';ctx.lineWidth=1.5;
-  [SRV_N,SRV_F].forEach(y=>{ctx.beginPath();ctx.moveTo(tx(0),ty(y));ctx.lineTo(tx(COURT_W),ty(y));ctx.stroke()});
+  [SRV_N,SRV_F].forEach(y=>{ctx.beginPath();ctx.moveTo(tx(COURT_W),ty(y));ctx.lineTo(tx(0),ty(y));ctx.stroke()});
   ctx.beginPath();ctx.moveTo(tx(CX),ty(SRV_N));ctx.lineTo(tx(CX),ty(SRV_F));ctx.stroke();
   ctx.beginPath();ctx.moveTo(tx(CX),ty(0));ctx.lineTo(tx(CX),ty(0.4));ctx.stroke();
   ctx.beginPath();ctx.moveTo(tx(CX),ty(COURT_L));ctx.lineTo(tx(CX),ty(COURT_L-0.4));ctx.stroke();
