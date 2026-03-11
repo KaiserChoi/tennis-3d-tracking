@@ -593,6 +593,29 @@ body{font-family:'Lato',sans-serif;background:var(--bg);color:var(--text);height
               <span id="vt-progress-fps">0 fps</span>
             </div>
           </div>
+
+          <!-- Import Annotations -->
+          <div style="margin-top:8px;padding:8px 10px;background:rgba(156,39,176,.08);border-radius:6px;border:1px solid rgba(156,39,176,.2)">
+            <div style="font-size:10px;font-weight:600;color:#ce93d8;margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px">Import Annotations</div>
+            <div style="display:flex;gap:4px;align-items:center;margin-bottom:5px">
+              <span style="font-size:10px;color:#4f88fa;min-width:36px">cam66:</span>
+              <select id="vt-import-cam1" style="flex:1;background:#1a1a2e;border:1px solid #444;border-radius:3px;color:#ccc;font-size:10px;padding:2px 4px" onchange="vtUpdateImportButton()">
+                <option value="">-- select --</option>
+              </select>
+            </div>
+            <div style="display:flex;gap:4px;align-items:center;margin-bottom:6px">
+              <span style="font-size:10px;color:#fa4e4e;min-width:36px">cam68:</span>
+              <select id="vt-import-cam2" style="flex:1;background:#1a1a2e;border:1px solid #444;border-radius:3px;color:#ccc;font-size:10px;padding:2px 4px" onchange="vtUpdateImportButton()">
+                <option value="">-- select --</option>
+              </select>
+            </div>
+            <button id="vt-import-btn" onclick="vtImportAnnotations()" disabled
+              style="width:100%;padding:5px;border:none;border-radius:4px;background:rgba(156,39,176,.3);color:#ce93d8;font-size:11px;font-weight:600;cursor:pointer;transition:background .15s;opacity:0.5">
+              📥 Import &amp; Build 3D
+            </button>
+            <div id="vt-import-status" style="font-size:9px;color:var(--text-muted);margin-top:4px;display:none"></div>
+          </div>
+
         </div>
 
         <!-- Right top: Video player -->
@@ -1261,8 +1284,8 @@ function switchPage(page){
   const navEl=document.querySelector(`.nav-item[data-page="${page}"]`);
   if(pageEl) pageEl.classList.add('active');
   if(navEl) navEl.classList.add('active');
-  // Load video list when switching to video test
-  if(page==='video-test') vtLoadVideoList();
+  // Load video list and annotation folders when switching to video test
+  if(page==='video-test'){ vtLoadVideoList(); vtLoadAnnotationFolders(); }
 }
 
 // ============================================================
@@ -1890,6 +1913,127 @@ async function vtLoadVideoList(){
     vtRenderVideoList();
     vtPopulateDropdowns();
   }catch(e){console.error(e)}
+}
+
+// ------ Import annotation folders ------
+async function vtLoadAnnotationFolders(){
+  try{
+    const r=await fetch('/api/annotation-folders');
+    const d=await r.json();
+    const folders=d.folders||[];
+    ['vt-import-cam1','vt-import-cam2'].forEach(id=>{
+      const sel=document.getElementById(id);
+      if(!sel) return;
+      // keep first placeholder option
+      while(sel.options.length>1) sel.remove(1);
+      folders.forEach(f=>{
+        const opt=document.createElement('option');opt.value=f;opt.textContent=f;
+        sel.appendChild(opt);
+      });
+      // Auto-select if folder name contains cam66/cam68
+      const camHint=id.includes('cam1')?'66':'68';
+      folders.forEach(f=>{if(f.includes('cam'+camHint)) sel.value=f;});
+    });
+    vtUpdateImportButton();
+  }catch(e){console.error('Failed to load annotation folders:',e);}
+}
+
+function vtUpdateImportButton(){
+  const c1=document.getElementById('vt-import-cam1')?.value;
+  const c2=document.getElementById('vt-import-cam2')?.value;
+  const btn=document.getElementById('vt-import-btn');
+  if(btn){
+    const ok=c1&&c2;
+    btn.disabled=!ok;
+    btn.style.opacity=ok?'1':'0.5';
+    btn.style.background=ok?'rgba(156,39,176,.5)':'rgba(156,39,176,.3)';
+  }
+}
+
+async function vtImportAnnotations(){
+  const cam1=document.getElementById('vt-import-cam1')?.value;
+  const cam2=document.getElementById('vt-import-cam2')?.value;
+  if(!cam1||!cam2) return;
+
+  const btn=document.getElementById('vt-import-btn');
+  const status=document.getElementById('vt-import-status');
+  if(btn){btn.disabled=true;btn.textContent='⏳ Computing...';}
+  if(status){status.style.display='';status.textContent='Importing annotations...';}
+
+  try{
+    const r=await fetch('/api/import-annotations',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({cam1_folder:cam1,cam2_folder:cam2})
+    });
+    if(!r.ok){const e=await r.json();throw new Error(e.detail||'Import failed');}
+    const d=await r.json();
+
+    const pts=d.points||[];
+    const bounces=d.bounces||[];
+    const stats=d.stats||{};
+
+    // Populate _vt3dPoints for 3D rendering
+    _vt3dPoints=pts;
+    vtUpdate3DBalls(_vt3dPoints);
+
+    // Build _vtLiveMatches for minimap + timeline + table
+    _vtLiveMatches=pts.map(p=>({
+      frame_index:p.frame_index,
+      cam1:{pixel_x:p.cam1_pixel[0],pixel_y:p.cam1_pixel[1],x:p.cam1_world[0],y:p.cam1_world[1]},
+      cam2:{pixel_x:p.cam2_pixel[0],pixel_y:p.cam2_pixel[1],x:p.cam2_world[0],y:p.cam2_world[1]},
+      avgX:p.x, avgY:p.y
+    }));
+    _vtLiveBounces=bounces;
+
+    // Set up slider range
+    if(pts.length>1){
+      const minF=pts[0].frame_index;
+      const maxF=pts[pts.length-1].frame_index;
+      const slider=document.getElementById('vt-live-slider');
+      if(slider){slider.min=minF;slider.max=maxF;slider.value=minF;slider.disabled=false;slider.style.opacity='1';}
+      _vtLiveScrubFrame=minF;
+    }
+
+    // Show playback row, save, export buttons
+    _vtPhase='done';
+    const pbRow=document.getElementById('vt-playback-row');
+    const saveBtn=document.getElementById('vt-save-btn');
+    const exportBtn=document.getElementById('vt-export-cvat-btn');
+    if(pbRow) pbRow.style.display='flex';
+    if(saveBtn) saveBtn.style.display='';
+    if(exportBtn) exportBtn.style.display='';
+
+    // Show live controls area
+    const liveCtrl=document.getElementById('vt-live-controls');
+    if(liveCtrl) liveCtrl.style.display='';
+
+    // Update minimap, detection table, markers
+    vtDrawLiveMinimap();
+    vtLiveBuildMarkers();
+    vtRebuildDetTable();
+    vtDrawBallOverlays(pts.length?pts[0].frame_index:null);
+
+    // Update frame label
+    const fl=document.getElementById('vt-step-frame-label');
+    if(fl&&pts.length) fl.textContent='f'+pts[0].frame_index;
+
+    // Update counts
+    const countEl=document.getElementById('vt-live-det-count');
+    if(countEl) countEl.textContent=pts.length+' pts';
+    const resLabel=document.getElementById('vt-det-results-label');
+    if(resLabel) resLabel.textContent=pts.length+' results';
+
+    if(status){
+      status.style.color='#4caf50';
+      status.textContent='✓ '+stats.triangulated_points+' 3D points, '+stats.bounces_detected+' bounces';
+    }
+  }catch(e){
+    console.error('Import failed:',e);
+    if(status){status.style.color='#f44336';status.textContent='✗ '+e.message;}
+  }finally{
+    if(btn){btn.disabled=false;btn.textContent='📥 Import & Build 3D';}
+  }
 }
 
 function vtRenderVideoList(){

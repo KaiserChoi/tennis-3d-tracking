@@ -549,6 +549,7 @@ class Orchestrator:
                 "stop_event": handle.stop_event,
                 "status_dict": handle.status_dict,
                 "ensemble_config": ensemble_dict,
+                "heatmap_mask": [tuple(r) for r in self.config.model.heatmap_mask],
             },
             daemon=True,
         )
@@ -643,6 +644,7 @@ class Orchestrator:
                     "stop_event": handle.stop_event,
                     "status_dict": handle.status_dict,
                     "ensemble_config": ensemble_dict,
+                    "heatmap_mask": [tuple(r) for r in self.config.model.heatmap_mask],
                 },
                 daemon=True,
             )
@@ -1006,6 +1008,137 @@ class Orchestrator:
             )
 
         return result
+
+    # ------------------------------------------------------------------
+    # Import LabelImg annotations → 3D
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _parse_labelimg_folder(folder: Path) -> dict[int, dict]:
+        """Parse a folder of LabelImg JSON annotation files.
+
+        Returns {frame_number: {"pixel_x": float, "pixel_y": float}}.
+        """
+        result = {}
+        for jf in sorted(folder.glob("*.json")):
+            try:
+                with open(jf, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                shapes = data.get("shapes", [])
+                if not shapes:
+                    continue
+                pts = shapes[0].get("points", [])
+                if not pts or len(pts[0]) < 2:
+                    continue
+                frame_num = int(jf.stem)
+                result[frame_num] = {"pixel_x": float(pts[0][0]), "pixel_y": float(pts[0][1])}
+            except Exception:
+                continue
+        return result
+
+    def import_labelimg_annotations(self, cam1_folder: str, cam2_folder: str) -> dict:
+        """Import LabelImg annotations from two camera folders and triangulate to 3D.
+
+        Args:
+            cam1_folder: Subfolder name under uploads/ for camera 1 (e.g. "cam66_clip").
+            cam2_folder: Subfolder name under uploads/ for camera 2 (e.g. "cam68_clip").
+
+        Returns:
+            dict with 'points' (list of 3D point dicts), 'stats', and 'bounces'.
+        """
+        from app.pipeline.homography import HomographyTransformer
+
+        uploads_dir = Path("uploads")
+        folder1 = uploads_dir / cam1_folder
+        folder2 = uploads_dir / cam2_folder
+
+        if not folder1.is_dir():
+            return {"error": f"Folder not found: {cam1_folder}", "points": []}
+        if not folder2.is_dir():
+            return {"error": f"Folder not found: {cam2_folder}", "points": []}
+
+        # Parse annotation files
+        ann1 = self._parse_labelimg_folder(folder1)
+        ann2 = self._parse_labelimg_folder(folder2)
+
+        if not ann1 or not ann2:
+            return {"error": "No valid annotations found", "points": []}
+
+        common_frames = sorted(set(ann1.keys()) & set(ann2.keys()))
+        if not common_frames:
+            return {"error": "No common frames between cameras", "points": []}
+
+        # Determine camera names from folder names
+        cam_names = list(self.config.cameras.keys())
+        if len(cam_names) < 2:
+            return {"error": "Need at least 2 cameras in config", "points": []}
+
+        cam1_name = cam_names[0]  # cam66
+        cam2_name = cam_names[1]  # cam68
+
+        # Load homography transformers
+        h_path = self.config.homography.path
+        cam1_cfg = self.config.cameras[cam1_name]
+        cam2_cfg = self.config.cameras[cam2_name]
+        h1 = HomographyTransformer(h_path, cam1_cfg.homography_key)
+        h2 = HomographyTransformer(h_path, cam2_cfg.homography_key)
+
+        # Get camera 3D positions
+        cam_pos = self._get_camera_positions()
+        pos1 = cam_pos.get(cam1_name, cam1_cfg.position_3d)
+        pos2 = cam_pos.get(cam2_name, cam2_cfg.position_3d)
+
+        # Triangulate each common frame
+        points = []
+        for fi in common_frames:
+            a1 = ann1[fi]
+            a2 = ann2[fi]
+            try:
+                wx1, wy1 = h1.pixel_to_world(a1["pixel_x"], a1["pixel_y"])
+                wx2, wy2 = h2.pixel_to_world(a2["pixel_x"], a2["pixel_y"])
+                x, y, z = triangulate((wx1, wy1), (wx2, wy2), pos1, pos2)
+                points.append({
+                    "frame_index": fi,
+                    "x": round(x, 4),
+                    "y": round(y, 4),
+                    "z": round(z, 4),
+                    "cam1_pixel": [round(a1["pixel_x"], 1), round(a1["pixel_y"], 1)],
+                    "cam2_pixel": [round(a2["pixel_x"], 1), round(a2["pixel_y"], 1)],
+                    "cam1_world": [round(wx1, 4), round(wy1, 4)],
+                    "cam2_world": [round(wx2, 4), round(wy2, 4)],
+                })
+            except Exception as e:
+                logger.warning("Triangulation failed for frame %d: %s", fi, e)
+
+        # Detect bounces (Z-axis V-shape)
+        bounces = []
+        for i in range(1, len(points) - 1):
+            prev_z = points[i - 1]["z"]
+            curr_z = points[i]["z"]
+            next_z = points[i + 1]["z"]
+            if curr_z < prev_z and curr_z < next_z and curr_z < 0.3:
+                bx, by = points[i]["x"], points[i]["y"]
+                in_court = 0 <= bx <= 8.23 and 0 <= by <= 23.77
+                bounces.append({
+                    "frame": points[i]["frame_index"],
+                    "x": bx, "y": by, "z": curr_z,
+                    "type": "IN" if in_court else "OUT",
+                })
+
+        stats = {
+            "cam1_annotations": len(ann1),
+            "cam2_annotations": len(ann2),
+            "common_frames": len(common_frames),
+            "triangulated_points": len(points),
+            "bounces_detected": len(bounces),
+        }
+
+        logger.info(
+            "Imported annotations: %d cam1, %d cam2, %d common → %d 3D points, %d bounces",
+            len(ann1), len(ann2), len(common_frames), len(points), len(bounces),
+        )
+
+        return {"points": points, "bounces": bounces, "stats": stats, "cam_order": [cam1_name, cam2_name]}
 
     def compute_3d_trajectory(self) -> dict:
         """Compute 3D trajectory using auto time-offset and spatial parabola fitting.

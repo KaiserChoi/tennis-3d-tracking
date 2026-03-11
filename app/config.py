@@ -20,6 +20,7 @@ class ModelConfig(BaseModel):
     frames_out: int
     threshold: float
     device: str
+    heatmap_mask: list[list[int]] = []
 
 
 class ServerConfig(BaseModel):

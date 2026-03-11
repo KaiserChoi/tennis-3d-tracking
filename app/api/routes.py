@@ -730,3 +730,42 @@ async def load_annotation(filename: str):
     with open(filepath, "r", encoding="utf-8") as f:
         data = json.load(f)
     return data
+
+
+# ------------------------------------------------------------------
+# Import LabelImg annotations → 3D
+# ------------------------------------------------------------------
+
+_UPLOADS_DIR = Path("uploads")
+
+
+@router.get("/api/annotation-folders")
+async def list_annotation_folders():
+    """List subfolders in uploads/ that contain LabelImg JSON annotation files."""
+    folders = []
+    if _UPLOADS_DIR.is_dir():
+        for sub in sorted(_UPLOADS_DIR.iterdir()):
+            if sub.is_dir() and any(sub.glob("*.json")):
+                folders.append(sub.name)
+    return {"folders": folders}
+
+
+@router.post("/api/import-annotations")
+async def import_annotations(request: Request):
+    """Import LabelImg annotations from two camera folders and compute 3D trajectory.
+
+    Body: {"cam1_folder": "cam66_clip", "cam2_folder": "cam68_clip"}
+    """
+    body = await request.json()
+    cam1_folder = body.get("cam1_folder", "")
+    cam2_folder = body.get("cam2_folder", "")
+    if not cam1_folder or not cam2_folder:
+        raise HTTPException(400, "Both cam1_folder and cam2_folder are required")
+
+    orch: Orchestrator = request.app.state.orchestrator
+    result = orch.import_labelimg_annotations(cam1_folder, cam2_folder)
+
+    if "error" in result:
+        raise HTTPException(400, result["error"])
+
+    return result

@@ -18,10 +18,32 @@ class BallTracker:
         original_size: tuple[int, int] = (1920, 1080),
         threshold: float = 0.5,
         history_len: int = 3,
+        heatmap_mask: Optional[list[tuple[int, int, int, int]]] = None,
     ):
         self.orig_w, self.orig_h = original_size
         self.threshold = threshold
         self.prev_positions: deque[np.ndarray] = deque(maxlen=history_len)
+        self.heatmap_mask = heatmap_mask or []
+
+    def _apply_mask(self, heatmap: np.ndarray) -> np.ndarray:
+        """Zero out masked regions (e.g. camera OSD timestamp) on the heatmap.
+
+        Mask rects are in original image coordinates (x0, y0, x1, y1).
+        They are scaled to heatmap resolution before applying.
+        """
+        if not self.heatmap_mask:
+            return heatmap
+        hm_h, hm_w = heatmap.shape[:2]
+        sx = hm_w / self.orig_w
+        sy = hm_h / self.orig_h
+        hm = heatmap.copy()
+        for x0, y0, x1, y1 in self.heatmap_mask:
+            mx0 = int(x0 * sx)
+            my0 = int(y0 * sy)
+            mx1 = int(x1 * sx + 0.5)
+            my1 = int(y1 * sy + 0.5)
+            hm[my0:my1, mx0:mx1] = 0.0
+        return hm
 
     def predict_position(self) -> Optional[np.ndarray]:
         """Linear extrapolation from recent positions."""
@@ -43,6 +65,7 @@ class BallTracker:
         Returns:
             (pixel_x, pixel_y, confidence) or None if not detected.
         """
+        heatmap = self._apply_mask(heatmap)
         hm_h, hm_w = heatmap.shape[:2]
         scale_x = self.orig_w / hm_w
         scale_y = self.orig_h / hm_h
@@ -97,6 +120,7 @@ class BallTracker:
         Returns up to max_blobs candidates sorted by blob_sum descending.
         Each candidate is a dict with pixel_x, pixel_y, blob_sum, blob_max, blob_area.
         """
+        heatmap = self._apply_mask(heatmap)
         hm_h, hm_w = heatmap.shape[:2]
         scale_x = self.orig_w / hm_w
         scale_y = self.orig_h / hm_h

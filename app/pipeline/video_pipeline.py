@@ -96,6 +96,7 @@ def run_video_pipeline(
     stop_event: mp.Event,
     status_dict: dict[str, Any],
     ensemble_config: Optional[dict] = None,
+    heatmap_mask: Optional[list[tuple[int, int, int, int]]] = None,
 ) -> None:
     """Process a video file segment through the ball detection pipeline.
 
@@ -181,7 +182,11 @@ def run_video_pipeline(
                 detector.compute_video_median(cap, start_frame, end_frame)
                 cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
 
-        tracker = BallTracker(original_size=(vid_w, vid_h), threshold=threshold)
+        tracker = BallTracker(
+            original_size=(vid_w, vid_h),
+            threshold=threshold,
+            heatmap_mask=heatmap_mask,
+        )
         homography = HomographyTransformer(homography_path, homography_key)
 
         status_dict["state"] = "running"
