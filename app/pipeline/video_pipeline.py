@@ -36,7 +36,7 @@ def _prefetch_thread(
     """Read frames, preprocess, and push ready batches into batch_queue.
 
     Each item placed on the queue is:
-        (batch_frame_count, preprocessed_list, preview_frame_or_None)
+        (batch_frame_count, preprocessed_list, raw_frames_list, preview_frame_or_None)
     where batch_frame_count is the cumulative processed_count after this batch.
     """
     frame_buffer: list = []
@@ -61,10 +61,13 @@ def _prefetch_thread(
         if len(frame_buffer) < frames_in:
             continue
 
-        # Push complete batch
+        # Push complete batch (include raw frames for blob verification)
         preview = raw_buffer[-1].copy()
         try:
-            batch_queue.put((processed_count, frame_buffer.copy(), preview), timeout=5.0)
+            batch_queue.put(
+                (processed_count, frame_buffer.copy(), [f.copy() for f in raw_buffer], preview),
+                timeout=5.0,
+            )
         except queue.Full:
             pass
         frame_buffer.clear()
@@ -97,6 +100,7 @@ def run_video_pipeline(
     status_dict: dict[str, Any],
     ensemble_config: Optional[dict] = None,
     heatmap_mask: Optional[list[tuple[int, int, int, int]]] = None,
+    blob_verifier_config: Optional[dict] = None,
 ) -> None:
     """Process a video file segment through the ball detection pipeline.
 
@@ -189,6 +193,22 @@ def run_video_pipeline(
         )
         homography = HomographyTransformer(homography_path, homography_key)
 
+        # Initialize blob verifier (optional YOLO secondary detection)
+        blob_verifier = None
+        use_verifier = (
+            blob_verifier_config is not None
+            and blob_verifier_config.get("enabled", False)
+        )
+        if use_verifier:
+            from app.pipeline.blob_verifier import BlobVerifier
+            blob_verifier = BlobVerifier(
+                model_path=blob_verifier_config.get("model_path", "yolo11n.pt"),
+                crop_size=blob_verifier_config.get("crop_size", 128),
+                conf=blob_verifier_config.get("conf", 0.25),
+                device=device,
+            )
+            log.info("Blob verifier enabled: %s", blob_verifier_config.get("model_path"))
+
         status_dict["state"] = "running"
         status_dict["total_frames"] = total_frames
         status_dict["processed_frames"] = 0
@@ -213,7 +233,7 @@ def run_video_pipeline(
             if item is None:
                 break  # sentinel — reader finished
 
-            processed_count, frame_buffer, preview_frame = item
+            processed_count, frame_buffer, raw_frames, preview_frame = item
 
             if ensemble_detector is not None:
                 # ---- Ensemble mode: both models + cross-validation ----
@@ -258,6 +278,14 @@ def run_video_pipeline(
                     blobs = tracker.process_heatmap_multi(heatmaps[i])
                     if not blobs:
                         continue
+
+                    # YOLO blob verification on every frame
+                    if blob_verifier is not None and len(blobs) > 0:
+                        from app.pipeline.blob_verifier import verify_blobs
+                        blobs = verify_blobs(
+                            raw_frames[i], blobs, blob_verifier,
+                            threshold=blob_verifier_config.get("conf", 0.25),
+                        )
 
                     fi = start_frame + processed_count - actual_frames_out + i
                     # Build candidates with world coordinates

@@ -34,3 +34,12 @@ uploads/
 exports/
 debug_heatmaps/
 annotations/
+data/
+runs/
+
+# YOLO weights
+yolo*.pt
+
+# Video output
+output/
+*.mp4

@@ -25,10 +25,15 @@ model:
   input_size:
   - 288
   - 512
-  path: model_weight/TrackNet_best.pt
-  threshold: 0.1
+  path: model_weight/TrackNet_finetuned.pt
+  threshold: 0.3
   heatmap_mask:
   - [0, 0, 620, 40]
+blob_verifier:
+  enabled: true
+  model_path: model_weight/blob_verifier_yolo.pt
+  crop_size: 128
+  conf: 0.15
 ensemble:
   enabled: false
   hrnet_path: model_weight/hrnet_tennis.onnx

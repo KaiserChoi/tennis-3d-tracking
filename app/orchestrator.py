@@ -16,7 +16,13 @@ from app.config import AppConfig
 from app.pipeline.camera_pipeline import run_pipeline
 from app.pipeline.video_pipeline import run_video_pipeline
 from app.schemas import BallPosition3D, PipelineStatus, SystemStatus, WorldPoint2D
-from app.analytics import BounceDetector, RallyTracker, run_batch_analytics
+from app.analytics import (
+    BounceDetector,
+    EnhancedBounceDetector,
+    RallyStateMachine,
+    RallyTracker,
+    run_batch_analytics,
+)
 from app.trajectory import clean_detections, find_offset_and_triangulate, fit_trajectory, segment_rallies
 from app.pipeline.multi_blob_matcher import MultiBlobMatcher
 from app.triangulation import triangulate
@@ -77,6 +83,10 @@ class Orchestrator:
         self._bounce_detector = BounceDetector()
         self._rally_tracker = RallyTracker()
         self._live_bounces: list[dict] = []
+        # Enhanced analytics (event-driven state machine)
+        self._enhanced_bounce = EnhancedBounceDetector()
+        self._rally_sm = RallyStateMachine()
+        self._live_rallies: list[dict] = []
         self._analytics_lock = threading.Lock()
 
     def _get_camera_positions(self) -> dict[str, list[float]]:
@@ -260,14 +270,35 @@ class Orchestrator:
                             cam68_world=WorldPoint2D(**d2),
                         )
                         # Feed live analytics
-                        pt = {"x": x, "y": y, "z": z, "timestamp": time.time()}
+                        now = time.time()
+                        pt = {"x": x, "y": y, "z": z, "timestamp": now}
+                        # Build per-camera detection info for enhanced analytics
+                        cam_dets = {}
+                        for cname, det in [(cam_names[0], d1), (cam_names[1], d2)]:
+                            cam_dets[cname] = {
+                                "world_x": det.get("x"),
+                                "world_y": det.get("y"),
+                                "pixel_x": det.get("pixel_x"),
+                                "pixel_y": det.get("pixel_y"),
+                                "yolo_conf": det.get("yolo_conf", 0.5),
+                            }
                         with self._analytics_lock:
+                            # Legacy analytics
                             bounce = self._bounce_detector.update(pt)
                             self._rally_tracker.update(pt, bounce)
                             if bounce is not None:
                                 self._live_bounces.append(bounce.to_dict())
                                 if len(self._live_bounces) > 50:
                                     self._live_bounces = self._live_bounces[-50:]
+                            # Enhanced analytics
+                            ebounce = self._enhanced_bounce.update(pt, cam_dets)
+                            rally_result = self._rally_sm.update(pt, ebounce)
+                            if ebounce is not None:
+                                self._live_bounces.append(ebounce.to_dict())
+                            if rally_result is not None:
+                                self._live_rallies.append(rally_result.to_dict())
+                                if len(self._live_rallies) > 20:
+                                    self._live_rallies = self._live_rallies[-20:]
                     except Exception as e:
                         logger.error("Triangulation error: %s", e)
 
@@ -421,6 +452,11 @@ class Orchestrator:
                 "rally_state": self._rally_tracker.get_state().to_dict(),
                 "recent_bounces": list(self._live_bounces[-10:]),
                 "completed_rallies": self._rally_tracker.get_completed_rallies(),
+                # Enhanced analytics
+                "enhanced_state": self._rally_sm.get_state_dict(),
+                "enhanced_rallies": [
+                    r.to_dict() for r in self._rally_sm.get_completed_rallies()
+                ],
             }
 
     def reset_live_analytics(self) -> None:
@@ -429,6 +465,9 @@ class Orchestrator:
             self._bounce_detector.reset()
             self._rally_tracker.reset()
             self._live_bounces.clear()
+            self._enhanced_bounce.reset()
+            self._rally_sm.reset()
+            self._live_rallies.clear()
 
     def get_latest_frame(self, name: str) -> Optional[bytes]:
         """返回指定摄像头的最新 JPEG 帧字节（用于 MJPEG 流）。"""
@@ -550,6 +589,8 @@ class Orchestrator:
                 "status_dict": handle.status_dict,
                 "ensemble_config": ensemble_dict,
                 "heatmap_mask": [tuple(r) for r in self.config.model.heatmap_mask],
+                "blob_verifier_config": self.config.blob_verifier.model_dump()
+                    if self.config.blob_verifier.enabled else None,
             },
             daemon=True,
         )
@@ -645,6 +686,8 @@ class Orchestrator:
                     "status_dict": handle.status_dict,
                     "ensemble_config": ensemble_dict,
                     "heatmap_mask": [tuple(r) for r in self.config.model.heatmap_mask],
+                    "blob_verifier_config": self.config.blob_verifier.model_dump()
+                        if self.config.blob_verifier.enabled else None,
                 },
                 daemon=True,
             )

@@ -3,7 +3,7 @@
 ## 概述
 
 `notebooks/trajectory_analysis.ipynb` 用于分析双摄像头网球追踪系统的 3D 轨迹质量，
-测试轨迹拟合与噪声过滤方法。
+测试轨迹拟合与噪声过滤方法，以及 GT 真值与模型输出的对比评估。
 
 ## 数据流
 
@@ -14,22 +14,37 @@ cam68 像素检测 ──→ 单应性投影 ──→ 世界坐标 (x,y) ──
                                                           │
                                                           ▼
                                                速度计算 → 轨迹分段 → 段内滤波
+                                                          │
+                                                          ▼
+                                               GT vs 模型 → 像素误差 + 3D 误差
 ```
 
-## 数据来源
+## 数据目录结构
 
-| 数据 | 路径 | 说明 |
-|------|------|------|
-| cam66 检测 | `uploads/cam66_20260307_173403_2min/` | 帧0-341含GT（score=None）和模型输出 |
-| cam68 检测 | `uploads/cam68_20260307_173403_2min/` | 同上 |
-| 单应性矩阵 | `src/homography_matrices.json` | cam66/cam68 的 H_image_to_world |
-| 相机位置 | `config.yaml` → cameras | cam66: (3.77, -15.73, 7.0), cam68: (5.81, 45.04, 7.0) |
+```
+uploads/
+  cam66_20260307_173403_2min/     # GT + 模型混合（手动标注覆盖了部分帧）
+    00000.json ~ 02999.json       # LabelMe 格式
+  cam68_20260307_173403_2min/     # 同上
+
+exports/
+  cam66_model/                    # 纯模型输出（threshold=0.3）
+    00000.json ~ 02999.json       # LabelMe 格式，所有帧都有
+  cam68_model/                    # 纯模型输出（threshold=0.35）
+```
 
 ### 数据格式
 
 检测数据为 LabelMe JSON 格式，区分方式：
 - **GT（手标）**：`shapes[0].score = null`
 - **模型输出**：`shapes[0].score = float`（blob_sum 值）
+
+### 生成纯模型输出
+
+```bash
+python -m tools.export_labelme uploads/cam66_20260307_173403_2min.mp4 exports/cam66_model 0.3
+python -m tools.export_labelme uploads/cam68_20260307_173403_2min.mp4 exports/cam68_model 0.35
+```
 
 ## Notebook 结构
 
@@ -67,17 +82,18 @@ world_y = wy·w / w
 
 ### 第5节：原始轨迹可视化
 
-三种视图：
-- **俯视图** (X-Y)：球场平面，叠加球场线
-- **侧视图** (Y-Z)：高度随球场长度变化
-- **3D 视图**：完整空间轨迹，含球场和相机位置
+- **图1**：俯视/侧视/正视 2D 投影（matplotlib）
+- **图2**：3D 交互式轨迹（plotly，可旋转/缩放）
+- **图3**：x/y/z 时间序列
 
 ### 第6节：噪声分析
 
-计算帧间 3D 速度（m/s），网球物理极限约 70 m/s（发球），
-超过此速度的帧很可能是误检或噪声。
+- **图4**：帧间 3D 速度时间序列
+- 网球物理极限约 70 m/s（发球），超过此速度的帧很可能是误检
 
 ### 第7节：轨迹分段
+
+- **图5**：分段后 Z 高度可视化
 
 按以下条件将连续轨迹切分为独立飞行段：
 - 帧间速度突变（超过阈值 → 击球/弹地/误检）
@@ -87,7 +103,7 @@ world_y = wy·w / w
 
 ### 第8节：段内滤波方法对比
 
-三种方法（均为后处理，不反馈回检测）：
+三种方法（均为后处理，不反馈回检测，详见 `docs/trajectory_filtering.md`）：
 
 | 方法 | 参数 | 特点 |
 |------|------|------|
@@ -95,7 +111,12 @@ world_y = wy·w / w
 | Savitzky-Golay | window=7, poly=2 | 保轨迹形态，匹配抛物线 |
 | 多项式拟合 | z:2次, xy:1次 | 全局拟合，z轴用抛物线 |
 
+- **图6**：最长段 x/y/z 三种滤波方法对比
+- **图7**：3D 滤波对比（plotly 交互式）
+
 ### 第9节：异常点识别
+
+- **图8**：异常点标注
 
 通过 SG 滤波残差识别噪声点：原始值与滤波值偏差超过阈值（默认 0.5m）的帧标记为异常。
 
@@ -103,14 +124,39 @@ world_y = wy·w / w
 
 输出全局和各段的统计信息：坐标范围、速度统计、异常帧数。
 
-## 使用方法
+### 第11节：GT vs 模型输出对比
 
-```bash
-cd notebooks/
-jupyter notebook trajectory_analysis.ipynb
-```
+加载 `exports/` 中的纯模型输出，与 `uploads/` 中的 GT 标注逐帧对比。
 
-### 关键参数调整
+- **图9**：GT vs 模型 像素误差柱状图（逐摄像头，颜色编码误差等级）
+- **图10**：3D 误差统计（GT 三角测量 vs 模型三角测量）
+- **图11**：3D GT vs 模型轨迹叠加（plotly 交互式，红×=GT，蓝点=模型，红线=误差）
+- **图12**：2D 像素级 GT vs 模型散点对比
+
+误差分级：
+- `<10px`：正确（绿色）
+- `10-50px`：偏差（橙色）
+- `>50px`：错误（红色）
+- 无检测：漏检（灰色竖线）
+
+## 可视化总览
+
+| 图号 | 内容 | 类型 |
+|------|------|------|
+| 图1 | 俯视/侧视/正视 2D 投影 | matplotlib |
+| 图2 | 3D 交互式轨迹 | plotly（可旋转） |
+| 图3 | x/y/z 时间序列 | matplotlib |
+| 图4 | 帧间速度 | matplotlib |
+| 图5 | 轨迹分段 (Z 高度) | matplotlib |
+| 图6 | 滤波方法对比 (x/y/z) | matplotlib |
+| 图7 | 3D 滤波对比 | plotly（可旋转） |
+| 图8 | 异常点标注 | matplotlib |
+| 图9 | GT vs 模型 像素误差 | matplotlib |
+| 图10 | GT vs 模型 3D 误差 | 数值统计 |
+| 图11 | 3D GT vs 模型轨迹叠加 | plotly（可旋转） |
+| 图12 | 2D 像素级 GT vs 模型 | matplotlib |
+
+## 关键参数调整
 
 | 参数 | 位置 | 默认值 | 说明 |
 |------|------|--------|------|
@@ -121,7 +167,19 @@ jupyter notebook trajectory_analysis.ipynb
 | `residual_threshold` | 第9节 | 0.5 m | 异常点判定阈值 |
 | SG window/polyorder | 第8节 | 7/2 | 滤波窗口和多项式阶数 |
 
+## 网球物理约束参考
+
+| 参数 | 值 | 说明 |
+|------|-----|------|
+| 球场宽 | 8.23 m | 单打场地 |
+| 球场长 | 23.77 m | |
+| 球网高度 | 0.914 m | 中点处 |
+| 最高球速 | ~70 m/s | 发球极限 |
+| 帧率 | 25 fps | |
+| 每帧最大位移 | ~2.8 m | 70/25 |
+
 ## 依赖
 
 - numpy, pandas, matplotlib, scipy
+- plotly（交互式 3D 可视化）
 - 项目模块：`app.pipeline.homography`, `app.triangulation`

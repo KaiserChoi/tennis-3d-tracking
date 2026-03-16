@@ -1,8 +1,12 @@
-"""Cross-camera blob pairing via 3D triangulation.
+"""Cross-camera blob pairing via 3D triangulation with temporal tracking.
 
 Given multi-blob candidates from two cameras, finds the pair whose
-triangulated 3D point has the lowest ray_distance (i.e. the pair most
-likely to be the same physical ball).
+triangulated 3D point has the lowest composite score combining ray_distance
+(geometric agreement) and temporal 3D distance (continuity with previous
+detections).
+
+When tracking is lost (no detection for >lost_timeout frames), falls back
+to ray_distance-only scoring, allowing new rally starts to be accepted.
 """
 
 import logging
@@ -74,8 +78,21 @@ class MultiBlobMatcher:
     """Match blob candidates across two cameras using 3D triangulation.
 
     For each frame, tries all (cam1_blob, cam2_blob) pairs, triangulates,
-    and picks the pair with the lowest ray_distance that also has a
-    physically plausible z coordinate.
+    and picks the pair with the lowest composite score:
+
+        score = ray_distance + temporal_weight * dist_to_predicted_3d
+
+    When no recent tracking history exists (LOST state), temporal_weight
+    is effectively 0, so only ray_distance matters. This allows new rallies
+    (serves) to be detected even though the ball is far from the last
+    tracked position.
+
+    State machine:
+        TRACKING: Have recent 3D detection (gap < lost_timeout)
+            → Use composite score with velocity-based prediction
+        LOST: No detection for >= lost_timeout frames
+            → Use ray_distance only (current behavior)
+            → First accepted detection transitions back to TRACKING
     """
 
     def __init__(
@@ -84,16 +101,84 @@ class MultiBlobMatcher:
         cam2_pos: list[float],
         max_ray_distance: float = 2.0,
         valid_z_range: tuple[float, float] = (0.0, 6.0),
+        temporal_weight: float = 0.3,
+        lost_timeout: int = 30,
+        max_velocity: float = 50.0,
+        history_size: int = 5,
+        fps: float = 30.0,
     ):
         self.cam1_pos = cam1_pos
         self.cam2_pos = cam2_pos
         self.max_ray_distance = max_ray_distance
         self.z_min, self.z_max = valid_z_range
 
+        # Temporal tracking parameters
+        self.temporal_weight = temporal_weight
+        self.lost_timeout = lost_timeout
+        self.max_velocity = max_velocity
+        self.history_size = history_size
+        self.fps = fps
+
+        # Temporal state
+        self._history: list[dict] = []  # [{pos: np.array, frame_index: int}]
+        self._velocity: Optional[np.ndarray] = None
+
         # Stats
         self.total_frames = 0
         self.matched_frames = 0
-        self.non_top1_picks = 0  # times the best pair wasn't (blob0, blob0)
+        self.non_top1_picks = 0
+        self.temporal_assists = 0  # times temporal score changed the pick
+
+    def _predict(self, frame_index: int) -> Optional[np.ndarray]:
+        """Predict 3D position for the given frame based on history.
+
+        Returns None if in LOST state (no recent history).
+        """
+        if not self._history:
+            return None
+
+        last = self._history[-1]
+        gap = frame_index - last["frame_index"]
+
+        # LOST state: gap too large, no prediction
+        if gap > self.lost_timeout:
+            return None
+
+        # Use velocity-based prediction if available
+        if self._velocity is not None and gap > 0:
+            dt = gap / self.fps
+            predicted = last["pos"] + self._velocity * dt
+            return predicted
+
+        # No velocity yet, use last known position
+        return last["pos"].copy()
+
+    def _update_history(self, x: float, y: float, z: float, frame_index: int) -> None:
+        """Update tracking history with new 3D detection."""
+        pos = np.array([x, y, z], dtype=np.float64)
+
+        # Compute velocity from last two points
+        if self._history:
+            last = self._history[-1]
+            dt = (frame_index - last["frame_index"]) / self.fps
+            if dt > 0:
+                vel = (pos - last["pos"]) / dt
+                speed = float(np.linalg.norm(vel))
+                if speed <= self.max_velocity:
+                    self._velocity = vel
+                # If speed exceeds max, keep old velocity (outlier protection)
+            # If same frame, don't update velocity
+
+        self._history.append({"pos": pos, "frame_index": frame_index})
+
+        # Trim history
+        if len(self._history) > self.history_size:
+            self._history = self._history[-self.history_size:]
+
+    def reset(self) -> None:
+        """Reset temporal state (e.g. at start of new video)."""
+        self._history.clear()
+        self._velocity = None
 
     def match(
         self,
@@ -102,9 +187,11 @@ class MultiBlobMatcher:
     ) -> Optional[dict]:
         """Find the best blob pair across two cameras for one frame.
 
+        Uses composite scoring: ray_distance + temporal_weight * 3d_distance.
+        When in LOST state (no recent tracking), temporal term is zero.
+
         Args:
             det1: Detection dict from camera 1, must have 'candidates' list.
-                  Each candidate has 'world_x', 'world_y', 'pixel_x', 'pixel_y', 'blob_sum'.
             det2: Detection dict from camera 2, same format.
 
         Returns:
@@ -116,9 +203,15 @@ class MultiBlobMatcher:
             return None
 
         self.total_frames += 1
+        frame_index = det1.get("frame_index", 0)
+
+        # Get predicted position (None if LOST)
+        predicted = self._predict(frame_index) if self.temporal_weight > 0 else None
 
         best = None
-        best_ray_dist = float("inf")
+        best_score = float("inf")
+        best_ray_only = None  # track what ray-only would have picked
+        best_ray_dist_only = float("inf")
 
         for i, c1 in enumerate(cands1):
             for j, c2 in enumerate(cands2):
@@ -129,20 +222,34 @@ class MultiBlobMatcher:
                     self.cam2_pos,
                 )
 
-                # Filter: ray_distance and z must be reasonable
+                # Hard filters: ray_distance and z must be reasonable
                 if ray_dist > self.max_ray_distance:
                     continue
                 if z < self.z_min or z > self.z_max:
                     continue
 
-                if ray_dist < best_ray_dist:
-                    best_ray_dist = ray_dist
+                # Composite score
+                score = ray_dist
+                if predicted is not None:
+                    d3d = float(np.linalg.norm(
+                        np.array([x, y, z]) - predicted
+                    ))
+                    score += self.temporal_weight * d3d
+
+                # Track ray-only best (for stats)
+                if ray_dist < best_ray_dist_only:
+                    best_ray_dist_only = ray_dist
+                    best_ray_only = (i, j)
+
+                if score < best_score:
+                    best_score = score
                     best = {
                         "x": x,
                         "y": y,
                         "z": z,
                         "ray_distance": ray_dist,
-                        "frame_index": det1.get("frame_index"),
+                        "score": score,
+                        "frame_index": frame_index,
                         "cam1_idx": i,
                         "cam2_idx": j,
                         "cam1_pixel": [c1["pixel_x"], c1["pixel_y"]],
@@ -151,12 +258,18 @@ class MultiBlobMatcher:
                         "cam2_world": [c2["world_x"], c2["world_y"]],
                         "cam1_blob_sum": c1["blob_sum"],
                         "cam2_blob_sum": c2["blob_sum"],
+                        "tracking_state": "tracking" if predicted is not None else "lost",
                     }
 
         if best is not None:
             self.matched_frames += 1
             if best["cam1_idx"] != 0 or best["cam2_idx"] != 0:
                 self.non_top1_picks += 1
+            # Check if temporal scoring changed the pick
+            if best_ray_only and (best["cam1_idx"], best["cam2_idx"]) != best_ray_only:
+                self.temporal_assists += 1
+            # Update tracking history
+            self._update_history(best["x"], best["y"], best["z"], frame_index)
 
         return best
 
@@ -167,6 +280,12 @@ class MultiBlobMatcher:
             "non_top1_picks": self.non_top1_picks,
             "non_top1_rate": (
                 self.non_top1_picks / self.matched_frames
+                if self.matched_frames > 0
+                else 0.0
+            ),
+            "temporal_assists": self.temporal_assists,
+            "temporal_assist_rate": (
+                self.temporal_assists / self.matched_frames
                 if self.matched_frames > 0
                 else 0.0
             ),

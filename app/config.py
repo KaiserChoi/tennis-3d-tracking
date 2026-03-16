@@ -48,6 +48,13 @@ class EnsembleConfig(BaseModel):
     single_factor: float = 0.8
 
 
+class BlobVerifierConfig(BaseModel):
+    enabled: bool = False
+    model_path: str = "yolo11n.pt"
+    crop_size: int = 128
+    conf: float = 0.25
+
+
 class AppConfig(BaseModel):
     cameras: dict[str, CameraConfig]
     model: ModelConfig
@@ -55,6 +62,7 @@ class AppConfig(BaseModel):
     server: ServerConfig
     calibration: CalibrationConfig = CalibrationConfig()
     ensemble: EnsembleConfig = EnsembleConfig()
+    blob_verifier: BlobVerifierConfig = BlobVerifierConfig()
 
 
 def load_config(config_path: str = "config.yaml") -> AppConfig:
