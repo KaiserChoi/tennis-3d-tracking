@@ -728,8 +728,8 @@ def detect_bounces(points_3d, fps=25.0):
             # V-shape pass levels:
             #   strong: min≥0.15, max≥0.3 (clear V)
             #   moderate: min≥0.08, max≥0.15 (weak but visible V)
-            v_strong = min_margin >= 0.15 and max_margin >= 0.3
-            v_moderate = min_margin >= 0.08 and max_margin >= 0.15
+            v_strong = min_margin >= 0.10 and max_margin >= 0.20
+            v_moderate = min_margin >= 0.05 and max_margin >= 0.10
 
             # ── Signal 2: Parabolic split ratio ───────────────────
             best_ratio = 0.0
@@ -1146,7 +1146,7 @@ def draw_trail(img, trail, scale, color=(0, 200, 255)):
 
 def render_video(
     video66_path, video68_path, det66, det68, bounces, n_frames, output_path,
-    net_crossings=None, smoothed_3d=None, canvas_w=1920,
+    net_crossings=None, smoothed_3d=None, canvas_w=1920, aligner=None,
 ):
     """Render the final tracking video."""
     cap66 = cv2.VideoCapture(video66_path)
@@ -1189,11 +1189,48 @@ def render_video(
     trail66 = []
     trail68 = []
 
+    # Pre-compute aligned frame pairs for both cameras
+    # aligned_frame_list[output_idx] = (cam66_raw_frame, cam68_raw_frame)
+    aligned_frame_list = None
+    if aligner and aligner._aligned_pairs and len(aligner._aligned_pairs) > 50:
+        aligned_frame_list = aligner._aligned_pairs
+        n_frames = len(aligned_frame_list)
+        logger.info(
+            "Rendering with frame alignment: %d aligned pairs, "
+            "cam66 range [%d-%d], cam68 range [%d-%d]",
+            n_frames,
+            aligned_frame_list[0][0], aligned_frame_list[-1][0],
+            aligned_frame_list[0][1], aligned_frame_list[-1][1],
+        )
+    else:
+        logger.info("Rendering without frame alignment (sequential read)")
+
+    last_cam66_pos = -1
+    last_cam68_pos = -1
+
     for fi in range(n_frames):
-        ret66, frame66 = cap66.read()
-        ret68, frame68 = cap68.read()
-        if not ret66 or not ret68:
+        if aligned_frame_list:
+            # Both cameras need seeking to aligned frames
+            target66 = aligned_frame_list[fi][0]
+            target68 = aligned_frame_list[fi][1]
+
+            if target66 != last_cam66_pos + 1:
+                cap66.set(cv2.CAP_PROP_POS_FRAMES, target66)
+            ret66, frame66 = cap66.read()
+            last_cam66_pos = target66
+
+            if target68 != last_cam68_pos + 1:
+                cap68.set(cv2.CAP_PROP_POS_FRAMES, target68)
+            ret68, frame68 = cap68.read()
+            last_cam68_pos = target68
+        else:
+            ret66, frame66 = cap66.read()
+            ret68, frame68 = cap68.read()
+
+        if not ret66:
             break
+        if not ret68:
+            frame68 = np.zeros((orig_h, orig_w, 3), dtype=np.uint8)
 
         # Resize camera frames
         small66 = cv2.resize(frame66, (half_w, half_h))
@@ -1410,10 +1447,17 @@ def main():
     parser.add_argument("--output", default="exports/tracking_video.mp4")
     parser.add_argument("--max-frames", type=int, default=1800)
     parser.add_argument("--top-k", type=int, default=2, help="Top-K blobs per camera")
+    parser.add_argument("--drift-rate", type=float, default=0.0,
+                        help="Frame drift rate between cameras (0=disabled, 0.0505=50ms/sec for 20260323 pair)")
     parser.add_argument(
         "--mode", choices=["top1", "multi", "viterbi"], default="viterbi",
         help="top1: legacy single-blob; multi: top-K + MultiBlobMatcher; viterbi: global optimal path",
     )
+    parser.add_argument("--no-rally", action="store_true", help="Skip ML rally segmentation filter")
+    parser.add_argument("--alignment-map", default=None,
+                        help="JSON file with frame alignment pairs [(cam66_frame, cam68_frame), ...]")
+    parser.add_argument("--ocr-align", action="store_true",
+                        help="Use PaddleOCR to read OSD timestamps and align frames automatically")
     args = parser.parse_args()
 
     cfg = load_config()
@@ -1438,6 +1482,192 @@ def main():
 
     n_frames = min(n66, n68)
     logger.info("Common frames: %d, det66=%d, det68=%d", n_frames, len(det66), len(det68))
+
+    # ── Phase 1.5: Frame Alignment (linear drift model) ────────────
+    # Two cameras have independent RTCs that drift apart.
+    # Measured: at frame 1485, cam66 is 3 seconds behind cam68.
+    # Linear model: cam68_aligned = cam66_frame - drift_rate * cam66_frame
+    # drift_rate is configurable via --drift-rate, default auto-detect.
+    #
+    # For the 20260323 video pair: drift_rate ≈ 0.0505 (50ms/sec)
+    drift_rate = getattr(args, 'drift_rate', 0.0)
+    aligner = None
+
+    if drift_rate > 0:
+        logger.info("=== Phase 1.5: Frame Alignment (linear drift=%.4f) ===", drift_rate)
+
+        # Build aligned pairs: cam66 reads sequentially, cam68 adjusts
+        total68 = n68
+        aligned_pairs_list = []
+        new_det68 = {}
+        new_multi68 = {}
+
+        for fi in range(n_frames):
+            offset = int(drift_rate * fi)
+            fi68 = max(0, min(fi + offset, total68 - 1))
+            aligned_pairs_list.append((fi, fi68))
+
+            if fi68 in det68:
+                new_det68[fi] = det68[fi68]
+            if fi68 in multi68:
+                new_multi68[fi] = multi68[fi68]
+
+        logger.info("  Frame 0: cam68 offset=%+d", aligned_pairs_list[0][0] - aligned_pairs_list[0][1])
+        logger.info("  Frame %d: cam68 offset=%+d (%.1fs)",
+                     n_frames - 1,
+                     aligned_pairs_list[-1][0] - aligned_pairs_list[-1][1],
+                     (aligned_pairs_list[-1][0] - aligned_pairs_list[-1][1]) / 25.0)
+        logger.info("Remapped cam68 detections: %d frames (from %d original)", len(new_det68), len(det68))
+
+        det68 = new_det68
+        multi68 = new_multi68
+
+        # Store for rendering
+        class SimpleAligner:
+            def __init__(self, pairs):
+                self._aligned_pairs = pairs
+                self._offset_pairs = [(p[0], p[1]) for p in pairs[::100]]
+        aligner = SimpleAligner(aligned_pairs_list)
+    elif args.alignment_map:
+        import json as _json
+        logger.info("=== Phase 1.5: Frame Alignment (OSD-based map: %s) ===", args.alignment_map)
+        with open(args.alignment_map) as _f:
+            aligned_pairs_list = _json.load(_f)
+
+        # Remap cam68 detections: for output frame i, cam68 data comes from aligned_pairs[i][1]
+        new_det68 = {}
+        new_multi68 = {}
+        for i, (f66, f68) in enumerate(aligned_pairs_list):
+            if i >= n_frames:
+                break
+            if f68 in det68:
+                new_det68[f66] = det68[f68]
+            if f68 in multi68:
+                new_multi68[f66] = multi68[f68]
+
+        logger.info("  Loaded %d aligned pairs", len(aligned_pairs_list))
+        logger.info("  Frame 0: cam66=%d, cam68=%d", aligned_pairs_list[0][0], aligned_pairs_list[0][1])
+        logger.info("  Frame %d: cam66=%d, cam68=%d",
+                     min(len(aligned_pairs_list)-1, n_frames-1),
+                     aligned_pairs_list[min(len(aligned_pairs_list)-1, n_frames-1)][0],
+                     aligned_pairs_list[min(len(aligned_pairs_list)-1, n_frames-1)][1])
+        logger.info("Remapped cam68 detections: %d frames (from %d original)", len(new_det68), len(det68))
+
+        det68 = new_det68
+        multi68 = new_multi68
+
+        class SimpleAligner:
+            def __init__(self, pairs):
+                self._aligned_pairs = pairs
+                self._offset_pairs = [(p[0], p[1]) for p in pairs[::100]]
+        aligner = SimpleAligner(aligned_pairs_list)
+    elif getattr(args, 'ocr_align', False):
+        # ── Phase 1.5: OCR-based Frame Alignment ──────────────────
+        # Use PaddleOCR to read OSD timestamps from both cameras,
+        # then align frames by matching OSD seconds.
+        import os as _os
+        _os.environ['PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK'] = 'True'
+        import re as _re
+        logger.info("=== Phase 1.5: OCR Frame Alignment ===")
+
+        # Free TrackNet GPU memory before loading OCR model
+        del detector
+        import torch as _torch
+        if _torch.cuda.is_available():
+            _torch.cuda.empty_cache()
+        import gc; gc.collect()
+
+        from paddleocr import TextRecognition
+        ocr_model = TextRecognition(
+            model_name='PP-OCRv5_mobile_rec',
+            model_dir='model_weight/PP-OCRv5_mobile_rec',
+            enable_mkldnn=False,
+        )
+
+        def _read_osd_sec(frame):
+            crop = frame[0:40, 430:615]
+            out = ocr_model.predict(input=crop, batch_size=1)
+            for r in out:
+                m = _re.search(r'(\d{1,2}):(\d{2}):(\d{2})', r['rec_text'])
+                if m:
+                    return int(m.group(1)) * 3600 + int(m.group(2)) * 60 + int(m.group(3))
+            return None
+
+        # Read OSD every 25 frames (1 per second) for both cameras
+        import time as _time
+        _t0 = _time.perf_counter()
+        cap66_align = cv2.VideoCapture(args.video66)
+        cap68_align = cv2.VideoCapture(args.video68)
+
+        from collections import defaultdict as _ddict
+        sec_frames66 = _ddict(list)
+        sec_frames68 = _ddict(list)
+
+        _step = 25  # OCR every 25 frames
+        for fi in range(0, n_frames, _step):
+            cap66_align.set(cv2.CAP_PROP_POS_FRAMES, fi)
+            cap68_align.set(cv2.CAP_PROP_POS_FRAMES, fi)
+            ret66, f66 = cap66_align.read()
+            ret68, f68 = cap68_align.read()
+            if not ret66 or not ret68:
+                break
+            s66 = _read_osd_sec(f66)
+            s68 = _read_osd_sec(f68)
+            if s66 is not None:
+                sec_frames66[s66].append(fi)
+            if s68 is not None:
+                sec_frames68[s68].append(fi)
+
+        cap66_align.release()
+        cap68_align.release()
+
+        # Match by common OSD second -> piecewise linear interpolation
+        import numpy as _np
+        common_secs = sorted(set(sec_frames66.keys()) & set(sec_frames68.keys()))
+        anchor66 = [int(_np.median(sec_frames66[s])) for s in common_secs]
+        anchor68 = [int(_np.median(sec_frames68[s])) for s in common_secs]
+
+        _elapsed = _time.perf_counter() - _t0
+        logger.info("  OCR read %d seconds (cam66=%d, cam68=%d, common=%d) in %.1fs",
+                     len(common_secs), len(sec_frames66), len(sec_frames68),
+                     len(common_secs), _elapsed)
+
+        if len(common_secs) >= 2:
+            a66 = _np.array(anchor66, dtype=float)
+            a68 = _np.array(anchor68, dtype=float)
+
+            # Build per-frame mapping
+            aligned_pairs_list = []
+            new_det68 = {}
+            new_multi68 = {}
+
+            for fi in range(n_frames):
+                fi68 = int(_np.interp(fi, a66, a68))
+                fi68 = max(0, min(fi68, n68 - 1))
+                aligned_pairs_list.append((fi, fi68))
+                if fi68 in det68:
+                    new_det68[fi] = det68[fi68]
+                if fi68 in multi68:
+                    new_multi68[fi] = multi68[fi68]
+
+            logger.info("  Frame 0: cam68=%d (offset=%+d)", aligned_pairs_list[0][1], aligned_pairs_list[0][1] - 0)
+            mid = n_frames // 2
+            logger.info("  Frame %d: cam68=%d (offset=%+d)", mid, aligned_pairs_list[mid][1], aligned_pairs_list[mid][1] - mid)
+            logger.info("  Frame %d: cam68=%d (offset=%+d)", n_frames-1, aligned_pairs_list[-1][1], aligned_pairs_list[-1][1] - (n_frames-1))
+            logger.info("Remapped cam68 detections: %d frames (from %d original)", len(new_det68), len(det68))
+
+            det68 = new_det68
+            multi68 = new_multi68
+
+            class SimpleAligner:
+                def __init__(self, pairs):
+                    self._aligned_pairs = pairs
+                    self._offset_pairs = [(p[0], p[1]) for p in pairs[::100]]
+            aligner = SimpleAligner(aligned_pairs_list)
+        else:
+            logger.warning("  OCR alignment failed: only %d common seconds, need >= 2", len(common_secs))
+    else:
+        logger.info("Phase 1.5: No frame alignment (use --ocr-align or --drift-rate to enable)")
 
     if args.mode == "viterbi":
         # ── Phase 2: Viterbi Global Optimal Path ─────────────────
@@ -1539,7 +1769,7 @@ def main():
 
     # ── Phase 2.5: Rally Segmentation ──────────────────────────────
     rally_model_path = Path("model_weight/rally_segmentation.pkl")
-    if rally_model_path.exists():
+    if rally_model_path.exists() and not getattr(args, 'no_rally', False):
         logger.info("=== Phase 2.5: Rally Segmentation (ML model) ===")
         import pickle
         from tools.train_rally_model import extract_features, smooth_predictions
@@ -1793,6 +2023,7 @@ def main():
         n_frames, args.output,
         net_crossings=net_crossings,
         smoothed_3d=smoothed_3d,
+        aligner=aligner,
     )
 
 

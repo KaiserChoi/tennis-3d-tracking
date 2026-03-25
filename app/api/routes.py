@@ -400,6 +400,20 @@ async def recording_status():
     return orch.get_recording_status()
 
 
+@router.post("/api/recording/ffmpeg/start")
+async def recording_ffmpeg_start():
+    """开始 ffmpeg 录像（视频+音频，用于帧对齐）。"""
+    orch = _get_orch()
+    return orch.start_recording_ffmpeg()
+
+
+@router.post("/api/recording/ffmpeg/stop")
+async def recording_ffmpeg_stop():
+    """停止 ffmpeg 录像。"""
+    orch = _get_orch()
+    return orch.stop_recording_ffmpeg()
+
+
 # ---- Camera MJPEG stream ----
 
 @router.get("/api/camera/{name}/stream")
