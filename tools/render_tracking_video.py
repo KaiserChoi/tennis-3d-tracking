@@ -178,8 +178,14 @@ def load_stereo_calibration(calib_path="src/camera_calibration.json"):
     for cam in ["cam66", "cam68"]:
         c = data[cam]
         K = np.array(c["K"], dtype=np.float64)
-        dist = np.array(c["dist"], dtype=np.float64)
-        P = np.array(c["P"], dtype=np.float64)
+        dist = np.array(c.get("dist_coeffs", c.get("dist", [0, 0, 0, 0, 0])), dtype=np.float64)
+        # Compute projection matrix P = K @ [R | t]
+        if "P" in c:
+            P = np.array(c["P"], dtype=np.float64)
+        else:
+            R = np.array(c["R"], dtype=np.float64)
+            tvec = np.array(c["tvec"], dtype=np.float64).reshape(3, 1)
+            P = K @ np.hstack([R, tvec])
         result[cam] = {"K": K, "dist": dist, "P": P}
     return result
 
@@ -722,8 +728,8 @@ def detect_bounces(points_3d, fps=25.0):
             # V-shape pass levels:
             #   strong: min≥0.15, max≥0.3 (clear V)
             #   moderate: min≥0.08, max≥0.15 (weak but visible V)
-            v_strong = min_margin >= 0.15 and max_margin >= 0.3
-            v_moderate = min_margin >= 0.08 and max_margin >= 0.15
+            v_strong = min_margin >= 0.10 and max_margin >= 0.20
+            v_moderate = min_margin >= 0.05 and max_margin >= 0.10
 
             # ── Signal 2: Parabolic split ratio ───────────────────
             best_ratio = 0.0
@@ -826,6 +832,401 @@ def detect_bounces(points_3d, fps=25.0):
 
     logger.info("Detected %d bounces (hybrid V-shape + parabolic)", len(bounces))
     return bounces
+
+
+def detect_bounces_2d(det66, det68, cfg, window=8, min_margin_px=20, min_py=200,
+                      smoothed_3d=None):
+    """Detect bounces from 2D pixel Y local maxima (single-camera).
+
+    Instead of detecting bounces on noisy 3D Z values (+-0.5m error), detect them
+    on precise 2D pixel Y coordinates (+-3px error). Ball descending = pixel Y
+    increasing (in image coords), ball bouncing up = pixel Y decreasing.
+    So bounce = local MAXIMUM of pixel Y.
+
+    Use the CLOSER camera for each bounce:
+    - cam66 for near-end bounces (ball in lower half of cam66 image, py > min_py)
+    - cam68 for far-end bounces (ball in lower half of cam68 image, py > min_py)
+
+    Args:
+        det66: {frame: (px, py, conf)} cam66 detections
+        det68: {frame: (px, py, conf)} cam68 detections
+        cfg: config dict (for homography path)
+        window: half-window size for V-shape margin check (frames)
+        min_margin_px: minimum pixel margin for V-shape (stronger side)
+        min_py: minimum pixel Y for bounce candidate (ball in lower portion = near ground)
+
+    Returns:
+        List of bounce dicts: {frame, x, y, in_court, cam_used, px, py, margin_left, margin_right}
+    """
+    from app.pipeline.homography import HomographyTransformer
+
+    homo_path = cfg["homography"]["path"]
+    homo66 = HomographyTransformer(homo_path, "cam66")
+    homo68 = HomographyTransformer(homo_path, "cam68")
+
+    all_bounces = []
+
+    for cam_name, det, homo in [("cam66", det66, homo66), ("cam68", det68, homo68)]:
+        frames = sorted(det.keys())
+        if len(frames) < 2 * window + 1:
+            continue
+
+        # Build arrays
+        frame_arr = np.array(frames)
+        py_arr = np.array([det[fi][1] for fi in frames])
+        px_arr = np.array([det[fi][0] for fi in frames])
+
+        # Step 1: Median filter (kernel=5) to remove jitter
+        median_k = 5
+        half_m = median_k // 2
+        py_smooth = np.copy(py_arr)
+        for i in range(len(py_arr)):
+            lo = max(0, i - half_m)
+            hi = min(len(py_arr), i + half_m + 1)
+            py_smooth[i] = np.median(py_arr[lo:hi])
+
+        # Split into continuous segments (max gap = 3 frames)
+        MAX_GAP = 3
+        segments = []
+        seg_start = 0
+        for i in range(1, len(frame_arr)):
+            if frame_arr[i] - frame_arr[i - 1] > MAX_GAP:
+                segments.append((seg_start, i))
+                seg_start = i
+        segments.append((seg_start, len(frame_arr)))
+
+        # Step 2: Find local maxima of py within each segment
+        MIN_SEG_LEN = 2 * window + 1
+        weak_margin_ratio = 0.5  # weaker side >= min_margin_px * this
+
+        for seg_s, seg_e in segments:
+            seg_len = seg_e - seg_s
+            if seg_len < MIN_SEG_LEN:
+                continue
+
+            for i in range(seg_s + window, seg_e - window):
+                py_i = py_smooth[i]
+
+                # Ball must be in the lower portion of frame (near ground)
+                if py_i < min_py:
+                    continue
+
+                # Compute left margin: py_i - min(py in left window)
+                left_window = py_smooth[i - window:i]
+                right_window = py_smooth[i + 1:i + window + 1]
+
+                margin_left = float(py_i - np.min(left_window))
+                margin_right = float(py_i - np.min(right_window))
+
+                # Must be a local maximum: both sides lower
+                if margin_left <= 0 or margin_right <= 0:
+                    continue
+
+                # Asymmetric check: stronger side >= min_margin_px,
+                # weaker side >= min_margin_px * weak_margin_ratio
+                strong_side = max(margin_left, margin_right)
+                weak_side = min(margin_left, margin_right)
+
+                if strong_side < min_margin_px:
+                    continue
+                if weak_side < min_margin_px * weak_margin_ratio:
+                    continue
+
+                # Also check that this is actually the peak in its local neighborhood
+                # (not just on the slope of a bigger peak)
+                local_neighborhood = py_smooth[max(seg_s, i - 3):min(seg_e, i + 4)]
+                if py_i < np.max(local_neighborhood) - 1.0:
+                    continue
+
+                # Descent/ascent check: verify monotonic trend
+                # Before peak: py should generally increase (ball descending)
+                # After peak: py should generally decrease (ball ascending)
+                # Check using the slope of a 4-frame sub-window on each side
+                descent_ok = False
+                ascent_ok = False
+                check_len = min(4, window)
+                if i - check_len >= seg_s:
+                    pre_slope = py_smooth[i] - py_smooth[i - check_len]
+                    descent_ok = pre_slope > 8.0  # at least 8px increase (ball descending)
+                if i + check_len < seg_e:
+                    post_slope = py_smooth[i] - py_smooth[i + check_len]
+                    ascent_ok = post_slope > 8.0  # at least 8px decrease after (ball ascending)
+                if not (descent_ok and ascent_ok):
+                    continue
+
+                # Use homography to get world coordinates
+                px_i = float(px_arr[i])
+                py_orig = float(py_arr[i])  # use original (not smoothed) for homography
+                wx, wy = homo.pixel_to_world(px_i, py_orig)
+
+                in_court = (SINGLES_X_MIN <= wx <= SINGLES_X_MAX and
+                            0 <= wy <= COURT_L)
+
+                # Determine if this is the "near" camera for this bounce
+                # cam66 is near-end (y < NET_Y), cam68 is far-end (y > NET_Y)
+                if cam_name == "cam66" and wy > NET_Y + 2.0:
+                    continue  # cam66 shouldn't detect far-end bounces
+                if cam_name == "cam68" and wy < NET_Y - 2.0:
+                    continue  # cam68 shouldn't detect near-end bounces
+
+                all_bounces.append({
+                    "frame": int(frame_arr[i]),
+                    "x": float(wx),
+                    "y": float(wy),
+                    "z": 0.0,  # 2D method assumes z=0 at bounce
+                    "in_court": in_court,
+                    "cam_used": cam_name,
+                    "px": px_i,
+                    "py": py_orig,
+                    "margin_left": margin_left,
+                    "margin_right": margin_right,
+                    "score": margin_left + margin_right,
+                })
+
+    # Sort by frame
+    all_bounces.sort(key=lambda b: b["frame"])
+
+    # Dense segment filter: need enough detections nearby (from either camera)
+    all_det_frames = set(det66.keys()) | set(det68.keys())
+
+    def _in_dense_region(fi):
+        nearby = sum(1 for f in range(fi - 20, fi + 21) if f in all_det_frames)
+        return nearby >= 15
+
+    all_bounces = [b for b in all_bounces if _in_dense_region(b["frame"])]
+
+    # Pixel speed filter: ball must be moving significantly (not dead-ball jitter)
+    # Use a wider window and check BOTH px and py displacement
+    MIN_PX_SPEED = 5.0  # pixels per frame (higher threshold to filter dead ball)
+    SPEED_DT = 5
+
+    def _pixel_speed_and_py_range(b):
+        """Return (speed_px_per_frame, py_range_in_window).
+        py_range measures how much the ball moves vertically in a +-10 frame window.
+        A real bounce has large py_range (ball descending then ascending).
+        """
+        cam_det = det66 if b["cam_used"] == "cam66" else det68
+        fi = b["frame"]
+        frames_sorted = sorted(cam_det.keys())
+        idx = None
+        for j, f in enumerate(frames_sorted):
+            if f == fi:
+                idx = j
+                break
+        if idx is None:
+            return 0.0, 0.0
+        i_back = max(0, idx - SPEED_DT)
+        i_fwd = min(len(frames_sorted) - 1, idx + SPEED_DT)
+        if i_fwd == i_back:
+            return 0.0, 0.0
+        dt_frames = frames_sorted[i_fwd] - frames_sorted[i_back]
+        if dt_frames == 0:
+            return 0.0, 0.0
+        px0, py0 = cam_det[frames_sorted[i_back]][:2]
+        px1, py1 = cam_det[frames_sorted[i_fwd]][:2]
+        speed = math.hypot(px1 - px0, py1 - py0) / dt_frames
+
+        # py range in wider window (±10 frames) to check trajectory shape
+        i_wide_back = max(0, idx - 10)
+        i_wide_fwd = min(len(frames_sorted) - 1, idx + 10)
+        py_vals = [cam_det[frames_sorted[j]][1] for j in range(i_wide_back, i_wide_fwd + 1)]
+        py_range = max(py_vals) - min(py_vals) if py_vals else 0.0
+
+        return speed, py_range
+
+    # Filter: need sufficient speed AND the py range must be significant
+    # (dead ball on ground has large py but small py_range because it's static)
+    MIN_PY_RANGE = 80.0  # pixels — ball must move at least 80px vertically in ±10 frames
+
+    filtered = []
+    for b in all_bounces:
+        speed, py_range = _pixel_speed_and_py_range(b)
+        if speed >= MIN_PX_SPEED and py_range >= MIN_PY_RANGE:
+            filtered.append(b)
+    all_bounces = filtered
+
+    # 3D-confirmed rally filter: if smoothed_3d is available, use it to confirm
+    # that the ball was in active flight before the bounce.
+    # Require: (a) the ball must have been elevated (z > 0.5) in the 12 frames before, AND
+    #          (b) the ball must be descending (z decreasing) before the bounce frame.
+    if smoothed_3d:
+        MIN_Z_BEFORE = 0.5
+        Z_CHECK_WINDOW = 12
+
+        def _was_flying_and_descending(fi):
+            """Check ball was in flight AND descending toward ground."""
+            z_vals = [(f, smoothed_3d[f][2]) for f in range(fi - Z_CHECK_WINDOW, fi)
+                      if f in smoothed_3d]
+            if len(z_vals) < 3:
+                return False
+            max_z = max(z for _, z in z_vals)
+            if max_z < MIN_Z_BEFORE:
+                return False
+            # Check descending: last 3 z values should be decreasing
+            last3 = [z for _, z in z_vals[-3:]]
+            if len(last3) >= 2 and last3[-1] < last3[0]:
+                return True
+            return False
+
+        pre_flight = len(all_bounces)
+        all_bounces = [b for b in all_bounces if _was_flying_and_descending(b["frame"])]
+        if pre_flight - len(all_bounces) > 0:
+            logger.info("3D flight+descending filter removed %d bounce(s)",
+                        pre_flight - len(all_bounces))
+
+    # NMS: pick best bounce within clusters (min gap = 20 frames)
+    # In a real rally, bounces are at least 25+ frames apart (ball crosses court)
+    MIN_GAP = 20
+    bounces = []
+    for c in all_bounces:
+        if bounces and c["frame"] - bounces[-1]["frame"] < MIN_GAP:
+            if c["score"] > bounces[-1]["score"]:
+                bounces[-1] = c
+            continue
+        bounces.append(c)
+
+    # Clean up internal fields
+    for b in bounces:
+        b.pop("score", None)
+
+    logger.info("Detected %d bounces (2D pixel V-shape)", len(bounces))
+    for i, b in enumerate(bounces):
+        tag = "IN" if b["in_court"] else "OUT"
+        logger.info(
+            "  2D Bounce %d: frame=%d (%s py=%.0f, margins=%.0f/%.0fpx, "
+            "world=(%.2f, %.2f)) %s",
+            i + 1, b["frame"], b["cam_used"], b["py"],
+            b["margin_left"], b["margin_right"],
+            b["x"], b["y"], tag,
+        )
+    return bounces
+
+
+def refine_bounces_with_2d(bounces_3d, det66, det68, cfg, search_radius=2):
+    """Refine 3D bounce frame timing using 2D pixel Y local maximum.
+
+    For each 3D bounce candidate, find the frame with the highest pixel Y
+    in the appropriate camera within +-search_radius frames. This gives
+    sub-frame accuracy on the exact bounce point.
+
+    Also uses homography from the closer camera for accurate world position.
+
+    Args:
+        bounces_3d: list of 3D bounce dicts from detect_bounces()
+        det66, det68: single-camera detections {frame: (px, py, conf)}
+        cfg: config dict
+        search_radius: search +-N frames for the pixel Y maximum
+
+    Returns:
+        List of refined bounce dicts
+    """
+    from app.pipeline.homography import HomographyTransformer
+
+    homo_path = cfg["homography"]["path"]
+    homo66 = HomographyTransformer(homo_path, "cam66")
+    homo68 = HomographyTransformer(homo_path, "cam68")
+
+    refined = []
+    for b in bounces_3d:
+        fi = b["frame"]
+        wy = b.get("y_homo", b["y"])
+
+        # Determine which camera is closer
+        if wy < NET_Y:
+            cam_det, homo, cam_name = det66, homo66, "cam66"
+        else:
+            cam_det, homo, cam_name = det68, homo68, "cam68"
+
+        # Find the frame with highest pixel Y (lowest point in image = ground contact)
+        # within +-search_radius. Only adjust if the new py is significantly higher
+        # AND within tight search radius (conservative refinement).
+        best_fi = fi
+        best_py = cam_det[fi][1] if fi in cam_det else -1
+        orig_py = best_py
+        for offset in range(-search_radius, search_radius + 1):
+            if offset == 0:
+                continue
+            check_fi = fi + offset
+            if check_fi in cam_det:
+                py = cam_det[check_fi][1]
+                # Only accept if meaningfully higher (>3px) than original
+                if py > best_py + 3.0:
+                    best_py = py
+                    best_fi = check_fi
+
+        # Get world position from the closer camera at the refined frame
+        if best_fi in cam_det:
+            px, py = cam_det[best_fi][:2]
+            wx, wy_new = homo.pixel_to_world(px, py)
+            in_court = (SINGLES_X_MIN <= wx <= SINGLES_X_MAX and
+                        0 <= wy_new <= COURT_L)
+        else:
+            # Fallback to original
+            wx, wy_new = b.get("x_homo", b["x"]), b.get("y_homo", b["y"])
+            px, py = 0, 0
+            in_court = b["in_court"]
+
+        refined.append({
+            "frame": best_fi,
+            "frame_3d": fi,  # original 3D bounce frame
+            "x": float(wx),
+            "y": float(wy_new),
+            "z": b["z"],
+            "in_court": in_court,
+            "cam_used": cam_name,
+            "px": float(px),
+            "py": float(py),
+            "method": "2d_refined",
+        })
+
+        if best_fi != fi:
+            logger.info("  Bounce frame=%d refined to %d by 2D pixel Y (Δ=%+d, %s py=%.0f)",
+                        fi, best_fi, best_fi - fi, cam_name, best_py)
+
+    logger.info("Refined %d bounces using 2D pixel Y (search_radius=±%d)",
+                len(refined), search_radius)
+    return refined
+
+
+def merge_3d_and_2d_bounces(bounces_3d, bounces_2d, merge_window=8,
+                            min_2d_margin=200):
+    """Merge 3D and 2D bounce detections, preferring 3D when they overlap.
+
+    Strategy:
+    - Start with all 3D bounces
+    - Add 2D bounces that don't overlap with any 3D bounce AND have strong
+      margin evidence (high-confidence additions only)
+    - For overlapping bounces, use the 3D frame (more reliable overall)
+
+    Args:
+        bounces_3d: list of 3D bounce dicts
+        bounces_2d: list of 2D bounce dicts
+        merge_window: frames within which bounces are considered duplicates
+        min_2d_margin: minimum margin sum (left+right) for a 2D bounce to be
+            added as supplementary detection
+
+    Returns:
+        Merged list of bounce dicts
+    """
+    merged = list(bounces_3d)
+    frames_3d = {b["frame"] for b in bounces_3d}
+
+    added_2d = 0
+    for b2d in bounces_2d:
+        f2d = b2d["frame"]
+        # Check if this 2D bounce overlaps with any 3D bounce
+        overlaps = any(abs(f2d - f3d) <= merge_window for f3d in frames_3d)
+        if not overlaps:
+            # Only add high-confidence 2D bounces
+            margin_sum = b2d.get("margin_left", 0) + b2d.get("margin_right", 0)
+            if margin_sum >= min_2d_margin:
+                merged.append(b2d)
+                added_2d += 1
+
+    merged.sort(key=lambda b: b["frame"])
+    logger.info("Merged bounces: %d from 3D + %d new from 2D = %d total",
+                len(bounces_3d), added_2d, len(merged))
+    return merged
 
 
 def detect_net_crossings(smoothed_3d, fps=25.0):
@@ -1140,7 +1541,7 @@ def draw_trail(img, trail, scale, color=(0, 200, 255)):
 
 def render_video(
     video66_path, video68_path, det66, det68, bounces, n_frames, output_path,
-    net_crossings=None, smoothed_3d=None, canvas_w=1920,
+    net_crossings=None, smoothed_3d=None, canvas_w=1920, aligner=None,
 ):
     """Render the final tracking video."""
     cap66 = cv2.VideoCapture(video66_path)
@@ -1183,11 +1584,48 @@ def render_video(
     trail66 = []
     trail68 = []
 
+    # Pre-compute aligned frame pairs for both cameras
+    # aligned_frame_list[output_idx] = (cam66_raw_frame, cam68_raw_frame)
+    aligned_frame_list = None
+    if aligner and aligner._aligned_pairs and len(aligner._aligned_pairs) > 50:
+        aligned_frame_list = aligner._aligned_pairs
+        n_frames = len(aligned_frame_list)
+        logger.info(
+            "Rendering with frame alignment: %d aligned pairs, "
+            "cam66 range [%d-%d], cam68 range [%d-%d]",
+            n_frames,
+            aligned_frame_list[0][0], aligned_frame_list[-1][0],
+            aligned_frame_list[0][1], aligned_frame_list[-1][1],
+        )
+    else:
+        logger.info("Rendering without frame alignment (sequential read)")
+
+    last_cam66_pos = -1
+    last_cam68_pos = -1
+
     for fi in range(n_frames):
-        ret66, frame66 = cap66.read()
-        ret68, frame68 = cap68.read()
-        if not ret66 or not ret68:
+        if aligned_frame_list:
+            # Both cameras need seeking to aligned frames
+            target66 = aligned_frame_list[fi][0]
+            target68 = aligned_frame_list[fi][1]
+
+            if target66 != last_cam66_pos + 1:
+                cap66.set(cv2.CAP_PROP_POS_FRAMES, target66)
+            ret66, frame66 = cap66.read()
+            last_cam66_pos = target66
+
+            if target68 != last_cam68_pos + 1:
+                cap68.set(cv2.CAP_PROP_POS_FRAMES, target68)
+            ret68, frame68 = cap68.read()
+            last_cam68_pos = target68
+        else:
+            ret66, frame66 = cap66.read()
+            ret68, frame68 = cap68.read()
+
+        if not ret66:
             break
+        if not ret68:
+            frame68 = np.zeros((orig_h, orig_w, 3), dtype=np.uint8)
 
         # Resize camera frames
         small66 = cv2.resize(frame66, (half_w, half_h))
@@ -1253,44 +1691,63 @@ def render_video(
         if fi in bounce_by_frame:
             bounces_so_far.append(bounce_by_frame[fi])
 
-        # Draw all bounce markers
-        for bi, b in enumerate(bounces_so_far):
-            # Use homography-refined coords when available (more accurate for ground contact)
+        # Draw only the last 4 bounces
+        recent_bounces = bounces_so_far[-4:] if len(bounces_so_far) > 4 else bounces_so_far
+        for bi_rel, b in enumerate(recent_bounces):
+            bi_abs = len(bounces_so_far) - len(recent_bounces) + bi_rel
             bx = b.get("x_homo", b["x"])
             by = b.get("y_homo", b["y"])
             bpt = w2c(bx, by)
 
-            # Color: green=IN, red=OUT; recent ones brighter
-            age = len(bounces_so_far) - 1 - bi
-            brightness = max(0.4, 1.0 - age * 0.05)
+            age = len(recent_bounces) - 1 - bi_rel
+            brightness = max(0.5, 1.0 - age * 0.12)
 
+            # IN = filled green circle, OUT = hollow red circle
             if b["in_court"]:
-                outer_c = (0, int(200 * brightness), 0)
-                inner_c = (0, int(255 * brightness), int(100 * brightness))
+                color = (0, int(255 * brightness), int(80 * brightness))
+                cv2.circle(court_panel, bpt, 7, color, -1, cv2.LINE_AA)  # filled
             else:
-                outer_c = (0, 0, int(200 * brightness))
-                inner_c = (0, int(80 * brightness), int(255 * brightness))
+                color = (0, int(80 * brightness), int(255 * brightness))
+                cv2.circle(court_panel, bpt, 7, color, 2, cv2.LINE_AA)   # hollow
 
-            # Outer ring
-            cv2.circle(court_panel, bpt, 8, outer_c, 2, cv2.LINE_AA)
-            # Inner filled
-            cv2.circle(court_panel, bpt, 4, inner_c, -1, cv2.LINE_AA)
-
-            # Bounce number label
-            label = str(bi + 1)
+            # Bounce number
+            label = str(bi_abs + 1)
             cv2.putText(
                 court_panel, label, (bpt[0] + 10, bpt[1] + 4),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1, cv2.LINE_AA,
             )
 
-            # IN/OUT label for recent bounces
-            if age < 5:
-                tag = "IN" if b["in_court"] else "OUT"
-                tag_c = (0, 255, 0) if b["in_court"] else (0, 0, 255)
-                cv2.putText(
-                    court_panel, tag, (bpt[0] + 10, bpt[1] + 18),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, tag_c, 1, cv2.LINE_AA,
-                )
+            # IN/OUT label
+            tag = "IN" if b["in_court"] else "OUT"
+            tag_c = (0, 255, 0) if b["in_court"] else (0, 0, 255)
+            cv2.putText(
+                court_panel, tag, (bpt[0] + 10, bpt[1] + 18),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.35, tag_c, 1, cv2.LINE_AA,
+            )
+
+        # Draw landing circle on camera views for recent bounces
+        BOUNCE_CIRCLE_FADE = 40  # frames to show landing circle
+        for b in recent_bounces:
+            b_age = fi - b["frame"]
+            if 0 <= b_age < BOUNCE_CIRCLE_FADE:
+                alpha = 1.0 - b_age / BOUNCE_CIRCLE_FADE
+                thickness = 2 if b["in_court"] else 1  # thicker for IN
+                # cam66
+                if b["frame"] in det66:
+                    bpx, bpy, _ = det66[b["frame"]]
+                    sx, sy = int(bpx * scale), int(bpy * scale)
+                    radius = int(18 * alpha) + 8
+                    cv2.circle(small66, (sx, sy), radius,
+                               (int(255 * alpha), int(255 * alpha), int(255 * alpha)),
+                               thickness, cv2.LINE_AA)
+                # cam68
+                if b["frame"] in det68:
+                    bpx, bpy, _ = det68[b["frame"]]
+                    sx, sy = int(bpx * scale), int(bpy * scale)
+                    radius = int(18 * alpha) + 8
+                    cv2.circle(small68, (sx, sy), radius,
+                               (int(255 * alpha), int(255 * alpha), int(255 * alpha)),
+                               thickness, cv2.LINE_AA)
 
         # ── Net crossing speed overlay on cam66 ────────────────────
         if fi in nc_by_frame:
@@ -1385,10 +1842,21 @@ def main():
     parser.add_argument("--output", default="exports/tracking_video.mp4")
     parser.add_argument("--max-frames", type=int, default=1800)
     parser.add_argument("--top-k", type=int, default=2, help="Top-K blobs per camera")
+    parser.add_argument("--drift-rate", type=float, default=0.0,
+                        help="Frame drift rate between cameras (0=disabled, 0.0505=50ms/sec for 20260323 pair)")
     parser.add_argument(
         "--mode", choices=["top1", "multi", "viterbi"], default="viterbi",
         help="top1: legacy single-blob; multi: top-K + MultiBlobMatcher; viterbi: global optimal path",
     )
+    parser.add_argument("--no-rally", action="store_true", help="Skip ML rally segmentation filter")
+    parser.add_argument("--alignment-map", default=None,
+                        help="JSON file with frame alignment pairs [(cam66_frame, cam68_frame), ...]")
+    parser.add_argument("--ocr-align", action="store_true",
+                        help="Use PaddleOCR to read OSD timestamps and align frames automatically")
+    parser.add_argument("--bounce-mode", choices=["3d", "2d", "merged", "refined", "both"],
+                        default="3d",
+                        help="Bounce detection: 3d=traditional, 2d=pixel Y standalone, "
+                             "merged=3D+2D union, refined=3D with 2D frame adjustment, both=compare")
     args = parser.parse_args()
 
     cfg = load_config()
@@ -1413,6 +1881,192 @@ def main():
 
     n_frames = min(n66, n68)
     logger.info("Common frames: %d, det66=%d, det68=%d", n_frames, len(det66), len(det68))
+
+    # ── Phase 1.5: Frame Alignment (linear drift model) ────────────
+    # Two cameras have independent RTCs that drift apart.
+    # Measured: at frame 1485, cam66 is 3 seconds behind cam68.
+    # Linear model: cam68_aligned = cam66_frame - drift_rate * cam66_frame
+    # drift_rate is configurable via --drift-rate, default auto-detect.
+    #
+    # For the 20260323 video pair: drift_rate ≈ 0.0505 (50ms/sec)
+    drift_rate = getattr(args, 'drift_rate', 0.0)
+    aligner = None
+
+    if drift_rate > 0:
+        logger.info("=== Phase 1.5: Frame Alignment (linear drift=%.4f) ===", drift_rate)
+
+        # Build aligned pairs: cam66 reads sequentially, cam68 adjusts
+        total68 = n68
+        aligned_pairs_list = []
+        new_det68 = {}
+        new_multi68 = {}
+
+        for fi in range(n_frames):
+            offset = int(drift_rate * fi)
+            fi68 = max(0, min(fi + offset, total68 - 1))
+            aligned_pairs_list.append((fi, fi68))
+
+            if fi68 in det68:
+                new_det68[fi] = det68[fi68]
+            if fi68 in multi68:
+                new_multi68[fi] = multi68[fi68]
+
+        logger.info("  Frame 0: cam68 offset=%+d", aligned_pairs_list[0][0] - aligned_pairs_list[0][1])
+        logger.info("  Frame %d: cam68 offset=%+d (%.1fs)",
+                     n_frames - 1,
+                     aligned_pairs_list[-1][0] - aligned_pairs_list[-1][1],
+                     (aligned_pairs_list[-1][0] - aligned_pairs_list[-1][1]) / 25.0)
+        logger.info("Remapped cam68 detections: %d frames (from %d original)", len(new_det68), len(det68))
+
+        det68 = new_det68
+        multi68 = new_multi68
+
+        # Store for rendering
+        class SimpleAligner:
+            def __init__(self, pairs):
+                self._aligned_pairs = pairs
+                self._offset_pairs = [(p[0], p[1]) for p in pairs[::100]]
+        aligner = SimpleAligner(aligned_pairs_list)
+    elif args.alignment_map:
+        import json as _json
+        logger.info("=== Phase 1.5: Frame Alignment (OSD-based map: %s) ===", args.alignment_map)
+        with open(args.alignment_map) as _f:
+            aligned_pairs_list = _json.load(_f)
+
+        # Remap cam68 detections: for output frame i, cam68 data comes from aligned_pairs[i][1]
+        new_det68 = {}
+        new_multi68 = {}
+        for i, (f66, f68) in enumerate(aligned_pairs_list):
+            if i >= n_frames:
+                break
+            if f68 in det68:
+                new_det68[f66] = det68[f68]
+            if f68 in multi68:
+                new_multi68[f66] = multi68[f68]
+
+        logger.info("  Loaded %d aligned pairs", len(aligned_pairs_list))
+        logger.info("  Frame 0: cam66=%d, cam68=%d", aligned_pairs_list[0][0], aligned_pairs_list[0][1])
+        logger.info("  Frame %d: cam66=%d, cam68=%d",
+                     min(len(aligned_pairs_list)-1, n_frames-1),
+                     aligned_pairs_list[min(len(aligned_pairs_list)-1, n_frames-1)][0],
+                     aligned_pairs_list[min(len(aligned_pairs_list)-1, n_frames-1)][1])
+        logger.info("Remapped cam68 detections: %d frames (from %d original)", len(new_det68), len(det68))
+
+        det68 = new_det68
+        multi68 = new_multi68
+
+        class SimpleAligner:
+            def __init__(self, pairs):
+                self._aligned_pairs = pairs
+                self._offset_pairs = [(p[0], p[1]) for p in pairs[::100]]
+        aligner = SimpleAligner(aligned_pairs_list)
+    elif getattr(args, 'ocr_align', False):
+        # ── Phase 1.5: OCR-based Frame Alignment ──────────────────
+        # Use PaddleOCR to read OSD timestamps from both cameras,
+        # then align frames by matching OSD seconds.
+        import os as _os
+        _os.environ['PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK'] = 'True'
+        import re as _re
+        logger.info("=== Phase 1.5: OCR Frame Alignment ===")
+
+        # Free TrackNet GPU memory before loading OCR model
+        del detector
+        import torch as _torch
+        if _torch.cuda.is_available():
+            _torch.cuda.empty_cache()
+        import gc; gc.collect()
+
+        from paddleocr import TextRecognition
+        ocr_model = TextRecognition(
+            model_name='PP-OCRv5_mobile_rec',
+            model_dir='model_weight/PP-OCRv5_mobile_rec',
+            enable_mkldnn=False,
+        )
+
+        def _read_osd_sec(frame):
+            crop = frame[0:40, 430:615]
+            out = ocr_model.predict(input=crop, batch_size=1)
+            for r in out:
+                m = _re.search(r'(\d{1,2}):(\d{2}):(\d{2})', r['rec_text'])
+                if m:
+                    return int(m.group(1)) * 3600 + int(m.group(2)) * 60 + int(m.group(3))
+            return None
+
+        # Read OSD every 25 frames (1 per second) for both cameras
+        import time as _time
+        _t0 = _time.perf_counter()
+        cap66_align = cv2.VideoCapture(args.video66)
+        cap68_align = cv2.VideoCapture(args.video68)
+
+        from collections import defaultdict as _ddict
+        sec_frames66 = _ddict(list)
+        sec_frames68 = _ddict(list)
+
+        _step = 25  # OCR every 25 frames
+        for fi in range(0, n_frames, _step):
+            cap66_align.set(cv2.CAP_PROP_POS_FRAMES, fi)
+            cap68_align.set(cv2.CAP_PROP_POS_FRAMES, fi)
+            ret66, f66 = cap66_align.read()
+            ret68, f68 = cap68_align.read()
+            if not ret66 or not ret68:
+                break
+            s66 = _read_osd_sec(f66)
+            s68 = _read_osd_sec(f68)
+            if s66 is not None:
+                sec_frames66[s66].append(fi)
+            if s68 is not None:
+                sec_frames68[s68].append(fi)
+
+        cap66_align.release()
+        cap68_align.release()
+
+        # Match by common OSD second -> piecewise linear interpolation
+        import numpy as _np
+        common_secs = sorted(set(sec_frames66.keys()) & set(sec_frames68.keys()))
+        anchor66 = [int(_np.median(sec_frames66[s])) for s in common_secs]
+        anchor68 = [int(_np.median(sec_frames68[s])) for s in common_secs]
+
+        _elapsed = _time.perf_counter() - _t0
+        logger.info("  OCR read %d seconds (cam66=%d, cam68=%d, common=%d) in %.1fs",
+                     len(common_secs), len(sec_frames66), len(sec_frames68),
+                     len(common_secs), _elapsed)
+
+        if len(common_secs) >= 2:
+            a66 = _np.array(anchor66, dtype=float)
+            a68 = _np.array(anchor68, dtype=float)
+
+            # Build per-frame mapping
+            aligned_pairs_list = []
+            new_det68 = {}
+            new_multi68 = {}
+
+            for fi in range(n_frames):
+                fi68 = int(_np.interp(fi, a66, a68))
+                fi68 = max(0, min(fi68, n68 - 1))
+                aligned_pairs_list.append((fi, fi68))
+                if fi68 in det68:
+                    new_det68[fi] = det68[fi68]
+                if fi68 in multi68:
+                    new_multi68[fi] = multi68[fi68]
+
+            logger.info("  Frame 0: cam68=%d (offset=%+d)", aligned_pairs_list[0][1], aligned_pairs_list[0][1] - 0)
+            mid = n_frames // 2
+            logger.info("  Frame %d: cam68=%d (offset=%+d)", mid, aligned_pairs_list[mid][1], aligned_pairs_list[mid][1] - mid)
+            logger.info("  Frame %d: cam68=%d (offset=%+d)", n_frames-1, aligned_pairs_list[-1][1], aligned_pairs_list[-1][1] - (n_frames-1))
+            logger.info("Remapped cam68 detections: %d frames (from %d original)", len(new_det68), len(det68))
+
+            det68 = new_det68
+            multi68 = new_multi68
+
+            class SimpleAligner:
+                def __init__(self, pairs):
+                    self._aligned_pairs = pairs
+                    self._offset_pairs = [(p[0], p[1]) for p in pairs[::100]]
+            aligner = SimpleAligner(aligned_pairs_list)
+        else:
+            logger.warning("  OCR alignment failed: only %d common seconds, need >= 2", len(common_secs))
+    else:
+        logger.info("Phase 1.5: No frame alignment (use --ocr-align or --drift-rate to enable)")
 
     if args.mode == "viterbi":
         # ── Phase 2: Viterbi Global Optimal Path ─────────────────
@@ -1514,7 +2168,7 @@ def main():
 
     # ── Phase 2.5: Rally Segmentation ──────────────────────────────
     rally_model_path = Path("model_weight/rally_segmentation.pkl")
-    if rally_model_path.exists():
+    if rally_model_path.exists() and not getattr(args, 'no_rally', False):
         logger.info("=== Phase 2.5: Rally Segmentation (ML model) ===")
         import pickle
         from tools.train_rally_model import extract_features, smooth_predictions
@@ -1596,7 +2250,7 @@ def main():
     # Only keep bounces that occur near a net crossing event.
     # This eliminates false positives during dead-ball / preparation periods
     # where no rally is in progress (no ball crossing the net).
-    NC_ANCHOR_WINDOW = 75  # frames (~3 seconds at 25fps)
+    NC_ANCHOR_WINDOW = 150  # frames (~6 seconds at 25fps, enough for serve→bounce)
     nc_frames = [nc["frame"] for nc in net_crossings]
     if nc_frames:
         pre_filter = len(bounces)
@@ -1657,21 +2311,23 @@ def main():
             use_cam68 = b["y"] > NET_Y
 
         # Get pixel position from chosen camera at the lowest-z frame
+        # Use ORIGINAL detections (det66/det68), not rally-filtered (filt66/filt68)
+        # because bounce frames at rally edges may have been filtered out
         homo_fi = best_fi
-        if use_cam68 and homo_fi in filt68:
-            px, py = filt68[homo_fi][:2]
+        if use_cam68 and homo_fi in det68:
+            px, py = det68[homo_fi][:2]
             wx, wy = homo68.pixel_to_world(px, py)
             cam_used = "cam68"
-        elif not use_cam68 and homo_fi in filt66:
-            px, py = filt66[homo_fi][:2]
+        elif not use_cam68 and homo_fi in det66:
+            px, py = det66[homo_fi][:2]
             wx, wy = homo66.pixel_to_world(px, py)
             cam_used = "cam66"
-        elif homo_fi in filt66:
-            px, py = filt66[homo_fi][:2]
+        elif homo_fi in det66:
+            px, py = det66[homo_fi][:2]
             wx, wy = homo66.pixel_to_world(px, py)
             cam_used = "cam66"
-        elif homo_fi in filt68:
-            px, py = filt68[homo_fi][:2]
+        elif homo_fi in det68:
+            px, py = det68[homo_fi][:2]
             wx, wy = homo68.pixel_to_world(px, py)
             cam_used = "cam68"
         else:
@@ -1749,6 +2405,40 @@ def main():
                          b.get("x_homo", b["x"]), b.get("y_homo", b["y"]),
                          b.get("homo_z", b["z"]), tag)
 
+    # ── Phase 3.2: 2D Pixel Bounce Detection ────────────────────────
+    bounce_mode = getattr(args, 'bounce_mode', '3d')
+    if bounce_mode in ("2d", "merged", "refined", "both"):
+        logger.info("=== Phase 3.2: 2D Pixel Bounce Detection ===")
+        bounces_2d = detect_bounces_2d(det66, det68, cfg, smoothed_3d=smoothed_3d)
+
+        # Apply net-crossing anchor filter to 2D bounces too
+        if nc_frames:
+            pre_2d = len(bounces_2d)
+            bounces_2d = [
+                b for b in bounces_2d
+                if any(abs(b["frame"] - ncf) <= NC_ANCHOR_WINDOW for ncf in nc_frames)
+            ]
+            removed_2d = pre_2d - len(bounces_2d)
+            if removed_2d:
+                logger.info("2D net-crossing anchor filter removed %d bounce(s)", removed_2d)
+
+        if bounce_mode == "2d":
+            bounces = bounces_2d
+            logger.info("Using 2D pixel bounces (%d bounces)", len(bounces))
+        elif bounce_mode == "merged":
+            bounces = merge_3d_and_2d_bounces(bounces, bounces_2d)
+            logger.info("Using merged 3D+2D bounces (%d bounces)", len(bounces))
+        elif bounce_mode == "refined":
+            bounces = refine_bounces_with_2d(bounces, det66, det68, cfg)
+            logger.info("Using 2D-refined bounces (%d bounces)", len(bounces))
+        else:
+            # "both" mode: log comparison
+            logger.info("=== Bounce Comparison: 3D vs 2D ===")
+            logger.info("3D bounces: %s", [b["frame"] for b in bounces])
+            logger.info("2D bounces: %s", [b["frame"] for b in bounces_2d])
+    else:
+        bounces_2d = []
+
     # ── Phase 3.5: 2D Pixel Smoothing for Visual Trajectory ─────────
     # Apply median3 + gap interpolation to make rendered trajectory smooth.
     # This is the "conf20_median5" approach adapted for rendering: we use
@@ -1766,6 +2456,7 @@ def main():
         n_frames, args.output,
         net_crossings=net_crossings,
         smoothed_3d=smoothed_3d,
+        aligner=aligner,
     )
 
 

@@ -107,6 +107,16 @@ class Orchestrator:
         self._ws_url = "wss://tennisserver.motionrivalry.com:8086/general"
         self._ws_enabled = False
 
+        # ML Rally segmentation filter
+        self._ml_rally_enabled = False
+        self._ml_rally_model = None
+        self._ml_rally_features_buffer: list[dict] = []  # rolling buffer for feature extraction
+
+        # Feature toggles (bounce detection, net crossing, OCR align)
+        self._bounce_detection_enabled: bool = True
+        self._net_crossing_enabled: bool = True
+        self._ocr_align_enabled: bool = False
+
     def _get_camera_positions(self) -> dict[str, list[float]]:
         """Get camera 3D positions, optionally overriding with calibrated values.
 
@@ -448,12 +458,120 @@ class Orchestrator:
 
     def get_recording_status(self) -> dict:
         if not self._recording:
+            ffmpeg_active = bool(self._ffmpeg_processes)
+            if ffmpeg_active:
+                elapsed = time.time() - self._ffmpeg_start_time
+                return {
+                    "recording": True,
+                    "mode": "ffmpeg",
+                    "duration_s": round(elapsed, 1),
+                    "files": {n: p["path"] for n, p in self._ffmpeg_processes.items()},
+                }
             return {"recording": False}
         elapsed = time.time() - self._recording_info.get("start_time", time.time())
         return {
             "recording": True,
+            "mode": "opencv",
             "duration_s": round(elapsed, 1),
             "files": self._recording_info.get("files", {}),
+        }
+
+    # ------------------------------------------------------------------
+    # FFmpeg Recording with Audio (alternative to OpenCV recording)
+    # ------------------------------------------------------------------
+    _ffmpeg_processes: dict = {}
+    _ffmpeg_start_time: float = 0
+
+    def start_recording_ffmpeg(self) -> dict:
+        """Start recording with ffmpeg (video + audio from RTSP).
+
+        Uses ffmpeg subprocess to directly capture RTSP streams including
+        audio tracks. This preserves the original stream quality and
+        includes microphone audio for frame alignment.
+
+        Does NOT interfere with the existing OpenCV recording method.
+        """
+        import subprocess, shutil
+
+        if self._ffmpeg_processes:
+            return {"status": "already_recording_ffmpeg",
+                    "files": {n: p["path"] for n, p in self._ffmpeg_processes.items()}}
+
+        ffmpeg_bin = shutil.which("ffmpeg")
+        if not ffmpeg_bin:
+            return {"status": "error", "message": "ffmpeg not found in PATH"}
+
+        self._recordings_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        files = {}
+
+        for name, cam_cfg in self._config.cameras.items():
+            rtsp_url = cam_cfg.rtsp_url
+            if not rtsp_url:
+                continue
+
+            out_path = str(self._recordings_dir / f"{name}_{ts}_av.mp4")
+
+            # ffmpeg command:
+            # -rtsp_transport tcp: use TCP for reliable RTSP
+            # -i: input RTSP stream
+            # -c:v copy: copy video stream without re-encoding (fast, lossless)
+            # -c:a aac: encode audio to AAC (RTSP usually sends PCM/G711)
+            # -y: overwrite output
+            cmd = [
+                ffmpeg_bin,
+                "-rtsp_transport", "tcp",
+                "-i", rtsp_url,
+                "-c:v", "copy",
+                "-c:a", "aac",
+                "-y",
+                out_path,
+            ]
+
+            try:
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                )
+                self._ffmpeg_processes[name] = {"proc": proc, "path": out_path}
+                files[name] = out_path
+                logger.info("[%s] ffmpeg recording started: %s", name, out_path)
+            except Exception as e:
+                logger.error("[%s] ffmpeg failed to start: %s", name, e)
+
+        if not files:
+            return {"status": "error", "message": "no cameras started"}
+
+        self._ffmpeg_start_time = time.time()
+        return {"status": "recording_ffmpeg", "files": files}
+
+    def stop_recording_ffmpeg(self) -> dict:
+        """Stop ffmpeg recording by sending 'q' to stdin or SIGINT."""
+        import signal
+
+        if not self._ffmpeg_processes:
+            return {"status": "not_recording_ffmpeg"}
+
+        files = {}
+        elapsed = time.time() - self._ffmpeg_start_time
+
+        for name, info in self._ffmpeg_processes.items():
+            proc = info["proc"]
+            try:
+                # Send SIGINT (graceful stop, ffmpeg finalizes the file)
+                proc.send_signal(signal.SIGINT)
+                proc.wait(timeout=10)
+            except Exception:
+                proc.kill()
+            files[name] = info["path"]
+            logger.info("[%s] ffmpeg recording stopped: %s", name, info["path"])
+
+        self._ffmpeg_processes.clear()
+        return {
+            "status": "stopped_ffmpeg",
+            "files": files,
+            "duration_s": round(elapsed, 1),
         }
 
     def _write_recording_frame(self, name: str, jpeg: bytes) -> None:
@@ -563,6 +681,58 @@ class Orchestrator:
         """Disable WebSocket push."""
         self._ws_enabled = False
         return {"enabled": False}
+
+    def enable_ml_rally(self) -> dict:
+        """Enable ML-based rally segmentation filter."""
+        if self._ml_rally_model is None:
+            model_path = Path("model_weight/rally_segmentation.pkl")
+            if model_path.exists():
+                import pickle
+                with open(model_path, "rb") as f:
+                    self._ml_rally_model = pickle.load(f)
+                logger.info("ML Rally model loaded from %s", model_path)
+            else:
+                logger.warning("ML Rally model not found at %s", model_path)
+                return {"enabled": False, "error": "model not found"}
+        self._ml_rally_enabled = True
+        return {"enabled": True}
+
+    def disable_ml_rally(self) -> dict:
+        """Disable ML rally filter (pass all detections through)."""
+        self._ml_rally_enabled = False
+        return {"enabled": False}
+
+    def get_ml_rally_status(self) -> dict:
+        """Return ML rally filter status."""
+        return {
+            "enabled": self._ml_rally_enabled,
+            "model_loaded": self._ml_rally_model is not None,
+        }
+
+    # ------------------------------------------------------------------
+    # Feature toggles: bounce detection, net crossing, OCR align
+    # ------------------------------------------------------------------
+    def set_bounce_detection_enabled(self, enabled: bool) -> dict:
+        self._bounce_detection_enabled = enabled
+        return {"enabled": self._bounce_detection_enabled}
+
+    def set_net_crossing_enabled(self, enabled: bool) -> dict:
+        self._net_crossing_enabled = enabled
+        return {"enabled": self._net_crossing_enabled}
+
+    def set_ocr_align_enabled(self, enabled: bool) -> dict:
+        self._ocr_align_enabled = enabled
+        return {"enabled": self._ocr_align_enabled}
+
+    def get_feature_toggles(self) -> dict:
+        return {
+            "bounce_detection": self._bounce_detection_enabled,
+            "net_crossing": self._net_crossing_enabled,
+            "ocr_align": self._ocr_align_enabled,
+            "ws_3d_display": self._ws_enabled,
+            "ml_rally": self._ml_rally_enabled,
+            "inference": self._inference_enabled,
+        }
 
     def _ws_push_loop(self) -> None:
         """Background thread: push bounce events to 3D display via WebSocket."""
