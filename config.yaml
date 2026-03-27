@@ -5,17 +5,17 @@ cameras:
   cam66:
     homography_key: cam66
     position_3d:
-    - 0.165      # 4.36 - 4.115
-    - -17.042     # 28.93 - 11.885
-    - 6.217
+    - 0.165      # cam66 x: 偏右0.165m
+    - 17.042     # cam66 y: 远端底线后方 (y>0)
+    - 6.217      # cam66 z: 高度6.2m
     rtsp_url: rtsp://localhost:8554/cam66
     # rtsp_url: rtsp://admin:motion168@192.168.1.66:554/Streaming/Channels/101
   cam68:
     homography_key: cam68
     position_3d:
-    - 0.211      # 4.431 - 4.115
-    - 17.156    # -5.28 - 11.885
-    - 5.286
+    - 0.211      # cam68 x: 偏右0.21m
+    - -17.156    # cam68 y: 近端底线后方 (y<0)
+    - 5.286      # cam68 z: 高度5.3m
     rtsp_url: rtsp://localhost:8554/cam68
     # rtsp_url: rtsp://admin:motion168@192.168.1.68:554/Streaming/Channels/101
 homography:

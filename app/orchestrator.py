@@ -89,6 +89,17 @@ class Orchestrator:
         self._live_rallies: list[dict] = []
         self._analytics_lock = threading.Lock()
 
+        # Pixel bounce detectors (per camera, no 3D Z dependency)
+        from app.analytics import PixelBounceDetector
+        self._pixel_bounce_66 = PixelBounceDetector(window_size=15, min_margin_px=25, cooldown_frames=12)
+        self._pixel_bounce_68 = PixelBounceDetector(window_size=15, min_margin_px=25, cooldown_frames=12)
+        self._pixel_bounces: list[dict] = []
+
+        # Robust net crossing tracking
+        self._net_wy_history: list[tuple] = []  # [(frame, world_y)]
+        self._net_crossings: list[dict] = []
+        self._last_net_frame = -100
+
         # Confidence filtering (top1_conf20)
         self._conf_percentile = 20  # reject bottom 20% by blob_sum
         self._conf_history: list[float] = []  # rolling blob_sum values
@@ -311,20 +322,23 @@ class Orchestrator:
                             cam66_world=WorldPoint2D(**d1),
                             cam68_world=WorldPoint2D(**d2),
                         )
-                        logger.debug("Ball 3D: (%.2f, %.2f, %.2f) cam66_px=(%.0f,%.0f) cam68_px=(%.0f,%.0f)",
-                                     x, y, z,
-                                     d1.get("pixel_x", 0), d1.get("pixel_y", 0),
-                                     d2.get("pixel_x", 0), d2.get("pixel_y", 0))
+                        logger.info("Ball 3D: (%.2f, %.2f, z=%.2f) cam66_px=(%.0f,%.0f) cam68_px=(%.0f,%.0f)",
+                                    x, y, z,
+                                    d1.get("pixel_x", 0), d1.get("pixel_y", 0),
+                                    d2.get("pixel_x", 0), d2.get("pixel_y", 0))
 
                         # --- Net crossing speed detection ---
+                        # Use cam66 world_y for more stable net detection
                         now = time.time()
-                        pt = {"x": x, "y": y, "z": z, "timestamp": now}
+                        pt = {"x": x, "y": y, "z": z, "timestamp": now,
+                              "frame_index": d1.get("frame_index", 0)}
+                        cam66_wy = d1.get("y", y)  # cam66 homography world_y
                         if self._prev_3d is not None:
-                            prev_y = self._prev_3d["y"]
-                            curr_y = y
-                            # Check if ball crossed the net
-                            if (prev_y < self._NET_Y and curr_y >= self._NET_Y) or \
-                               (prev_y > self._NET_Y and curr_y <= self._NET_Y):
+                            prev_cam66_wy = self._prev_3d.get("cam66_wy", self._prev_3d["y"])
+                            # Robust net crossing: require Y to cross 0 with minimum travel > 3m
+                            crossed = (prev_cam66_wy < -1.5 and cam66_wy > 1.5) or \
+                                      (prev_cam66_wy > 1.5 and cam66_wy < -1.5)
+                            if crossed and (now - self._prev_3d["timestamp"]) > 0.1:
                                 t_delta = now - self._prev_3d["timestamp"]
                                 if t_delta > 0.001:
                                     dx = x - self._prev_3d["x"]
@@ -347,6 +361,7 @@ class Orchestrator:
                                             self._net_crossings = self._net_crossings[-100:]
                                         logger.info("NET CROSSING: %.0f km/h %s at (%.2f, %.2f, %.2f)",
                                                     speed_kmh, direction, x, y, z)
+                        pt["cam66_wy"] = cam66_wy
                         self._prev_3d = pt
 
                         # Feed live analytics
@@ -360,29 +375,60 @@ class Orchestrator:
                                 "yolo_conf": det.get("yolo_conf", 0.5),
                             }
                         with self._analytics_lock:
-                            # Legacy analytics
-                            bounce = self._bounce_detector.update(pt)
-                            self._rally_tracker.update(pt, bounce)
-                            if bounce is not None:
-                                self._live_bounces.append(bounce.to_dict())
-                                if len(self._live_bounces) > 50:
-                                    self._live_bounces = self._live_bounces[-50:]
-                                bd = bounce.to_dict()
-                                logger.info("BOUNCE: (%.2f, %.2f, z=%.2f) %s",
-                                            bd.get("x", 0), bd.get("y", 0), bd.get("z", 0),
-                                            "IN" if bd.get("in_court", False) else "OUT")
-                                # --- Push bounce to 3D display queue ---
-                                if self._ws_enabled:
-                                    bx, by = bounce.x, bounce.y
-                                    self._ws_bounce_queue.append({
-                                        "x": (bx + 4.115) / 8.23,  # singles normalized
-                                        "y": (11.89 - by) / 23.78,  # 0=far, 1=near
-                                        "speed": self._latest_net_crossing["speed_kmh"] if self._latest_net_crossing else 0,
-                                        "timestamp": int(now * 1000),
-                                    })
-                            # Enhanced analytics
-                            ebounce = self._enhanced_bounce.update(pt, cam_dets)
-                            rally_result = self._rally_sm.update(pt, ebounce)
+                            # Bounce detection (controlled by toggle)
+                            bounce = None
+                            ebounce = None
+                            if self._bounce_detection_enabled:
+                                bounce = self._bounce_detector.update(pt)
+                                if bounce is not None:
+                                    self._live_bounces.append(bounce.to_dict())
+                                    if len(self._live_bounces) > 50:
+                                        self._live_bounces = self._live_bounces[-50:]
+                                    bd = bounce.to_dict()
+                                    logger.info("BOUNCE: (%.2f, %.2f, z=%.2f) %s",
+                                                bd.get("x", 0), bd.get("y", 0), bd.get("z", 0),
+                                                "IN" if bd.get("in_court", False) else "OUT")
+                                    if self._ws_enabled:
+                                        bx, by = bounce.x, bounce.y
+                                        self._ws_bounce_queue.append({
+                                            "x": (bx + 4.115) / 8.23,
+                                            "y": (11.89 - by) / 23.78,
+                                            "speed": self._latest_net_crossing["speed_kmh"] if self._latest_net_crossing else 0,
+                                            "timestamp": int(now * 1000),
+                                        })
+                                ebounce = self._enhanced_bounce.update(pt, cam_dets)
+
+                            # Pixel bounce detection (per camera, no Z dependency)
+                            if self._bounce_detection_enabled:
+                                for cname, cdet in cam_dets.items():
+                                    py = cdet.get("pixel_y")
+                                    wx = cdet.get("world_x")
+                                    wy = cdet.get("world_y")
+                                    if py is not None and wx is not None:
+                                        pxd = self._pixel_bounce_66 if "66" in cname else self._pixel_bounce_68
+                                        pb = pxd.update({
+                                            "pixel_y": py, "world_x": wx, "world_y": wy,
+                                            "frame_index": pt.get("frame_index", 0),
+                                            "timestamp": now, "camera": cname,
+                                        })
+                                        if pb is not None:
+                                            pbd = pb.to_dict()
+                                            self._pixel_bounces.append(pbd)
+                                            if len(self._pixel_bounces) > 50:
+                                                self._pixel_bounces = self._pixel_bounces[-50:]
+                                            # Also add to live_bounces for UI
+                                            self._live_bounces.append(pbd)
+                                            if len(self._live_bounces) > 50:
+                                                self._live_bounces = self._live_bounces[-50:]
+                                            logger.info("PX_BOUNCE(%s): (%.2f, %.2f) %s",
+                                                        cname, pbd.get("x", 0), pbd.get("y", 0),
+                                                        "IN" if pbd.get("in_court") else "OUT")
+
+                            # Rally tracking (controlled by ML Rally toggle)
+                            rally_result = None
+                            if self._ml_rally_enabled:
+                                self._rally_tracker.update(pt, bounce)
+                                rally_result = self._rally_sm.update(pt, ebounce)
                             if ebounce is not None:
                                 self._live_bounces.append(ebounce.to_dict())
                                 ebd = ebounce.to_dict()

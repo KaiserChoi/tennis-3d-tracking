@@ -156,8 +156,12 @@ class RallyState:
 
 
 def _is_in_court(x: float, y: float) -> bool:
-    """Check if (x, y) falls within the singles court boundaries."""
-    return 0 <= x <= COURT_X and 0 <= y <= COURT_Y
+    """Check if (x, y) falls within the court boundaries (V2: origin at center)."""
+    return SINGLES_X_MIN <= x <= SINGLES_X_MAX and -COURT_Y <= y <= COURT_Y
+
+
+# Alias for legacy code
+COURT_X = SINGLES_X_MAX
 
 
 # ---------------------------------------------------------------------------
@@ -189,11 +193,11 @@ class BounceDetector:
 
     def __init__(
         self,
-        window_size: int = 10,
-        z_ground_threshold: float = 0.5,
-        min_descent_speed: float = 0.5,
+        window_size: int = 15,
+        z_ground_threshold: float = 0.8,
+        min_descent_speed: float = 0.3,
         cooldown_seconds: float = 0.3,
-        min_improvement_ratio: float = 0.3,
+        min_improvement_ratio: float = 0.15,
     ):
         self.window_size = window_size
         self.z_ground_threshold = z_ground_threshold
@@ -202,6 +206,7 @@ class BounceDetector:
         self.min_improvement_ratio = min_improvement_ratio
 
         self._window: deque = deque(maxlen=window_size)
+        self._z_buffer: deque = deque(maxlen=30)  # larger buffer for smoothing
         self._last_bounce_time: float = 0.0
         self._all_bounces: list[BounceEvent] = []
 
@@ -210,17 +215,22 @@ class BounceDetector:
     def update(self, point: dict) -> Optional[BounceEvent]:
         """Process a new 3D point and return BounceEvent if bounce detected.
 
-        Fits a V-shape to the Z-time profile in the sliding window and
-        compares against a single-line fit.  Returns a BounceEvent when the
-        V-shape is a significantly better fit with the vertex near ground.
-
-        Args:
-            point: dict with keys ``x``, ``y``, ``z`` and optionally
-                   ``timestamp``, ``frame_index`` (or ``frame_a``).
+        Uses median-smoothed Z values to handle noise, then fits V-shape.
         """
-        self._window.append(point)
+        # Smooth Z with rolling median (handles ±0.5m noise)
+        self._z_buffer.append(point["z"])
+        if len(self._z_buffer) >= 5:
+            sorted_z = sorted(list(self._z_buffer)[-5:])
+            smoothed_z = sorted_z[2]  # median of last 5
+        else:
+            smoothed_z = point["z"]
 
-        # Need at least 6 points for meaningful V-shape (2 left + 1 vertex + 2 right + margin)
+        smoothed_point = dict(point)
+        smoothed_point["z_raw"] = point["z"]
+        smoothed_point["z"] = smoothed_z
+        self._window.append(smoothed_point)
+
+        # Need at least 6 points for V-shape
         if len(self._window) < 6:
             return None
 
@@ -231,7 +241,7 @@ class BounceDetector:
         pts = list(self._window)
         n = len(pts)
 
-        # Extract time and Z arrays
+        # Extract time and smoothed Z
         times = np.array(
             [p.get("timestamp", i * 0.04) for i, p in enumerate(pts)],
             dtype=np.float64,
@@ -246,14 +256,11 @@ class BounceDetector:
         if best_k < 0:
             return None
 
-        # Avoid division by zero for perfectly linear data
         if null_ssr < 1e-10:
             return None
 
-        # Compute improvement ratio
         improvement = 1.0 - v_ssr / null_ssr
 
-        # Decision criteria
         vertex_z = pts[best_k]["z"]
         is_bounce = (
             improvement > self.min_improvement_ratio
@@ -261,6 +268,13 @@ class BounceDetector:
             and left_slope < 0   # was descending
             and right_slope > 0  # now ascending
         )
+
+        # Log V-shape analysis for debugging
+        if vertex_z < 2.0 and left_slope < 0 and right_slope > 0:
+            logger.debug("V-shape candidate: vertex_z=%.2f improve=%.2f "
+                        "left_slope=%.2f right_slope=%.2f -> %s",
+                        vertex_z, improvement, left_slope, right_slope,
+                        "BOUNCE" if is_bounce else "rejected")
 
         if not is_bounce:
             return None
@@ -365,6 +379,118 @@ class BounceDetector:
         if dt <= 0:
             dt = max(1, len(segment) - 1) * 0.04  # ~25 fps fallback
         return (segment[-1]["z"] - segment[0]["z"]) / dt
+
+
+# ---------------------------------------------------------------------------
+# PixelBounceDetector — uses 2D pixel Y instead of 3D Z
+# ---------------------------------------------------------------------------
+
+
+class PixelBounceDetector:
+    """Streaming bounce detector using pixel Y coordinate V-shape.
+
+    Works on single-camera pixel data. Ball descending = pixel_y increasing,
+    ball bouncing up = pixel_y decreasing. Bounce = local maximum of pixel_y.
+
+    Does NOT require 3D triangulation — avoids Z accuracy issues entirely.
+    Uses homography to get world (x,y) for the bounce landing position.
+    """
+
+    def __init__(
+        self,
+        window_size: int = 15,
+        min_margin_px: float = 20.0,
+        cooldown_frames: int = 8,
+        min_py: float = 100.0,  # ignore detections near top of frame
+    ):
+        self.window_size = window_size
+        self.min_margin_px = min_margin_px
+        self.cooldown_frames = cooldown_frames
+        self.min_py = min_py
+
+        self._window: deque = deque(maxlen=window_size)
+        self._last_bounce_frame: int = -100
+        self._all_bounces: list[BounceEvent] = []
+
+    def update(self, point: dict) -> Optional[BounceEvent]:
+        """Process a point with pixel_y, world_x, world_y fields.
+
+        Expected point keys:
+            pixel_y: float — pixel Y coordinate (larger = lower in frame = closer to ground)
+            world_x, world_y: float — homography world coordinates
+            frame_index: int
+            timestamp: float
+            camera: str — 'cam66' or 'cam68'
+        """
+        self._window.append(point)
+
+        if len(self._window) < 7:
+            return None
+
+        fi = point.get("frame_index", 0)
+        if fi - self._last_bounce_frame < self.cooldown_frames:
+            return None
+
+        pts = list(self._window)
+        n = len(pts)
+
+        # Find the point with maximum pixel_y in the window (ball lowest in frame)
+        pys = [p.get("pixel_y", 0) for p in pts]
+        max_idx = int(np.argmax(pys))
+
+        # Must not be at edges (need context on both sides)
+        if max_idx < 2 or max_idx > n - 3:
+            return None
+
+        max_py = pys[max_idx]
+        if max_py < self.min_py:
+            return None
+
+        # Check V-shape margins
+        left_min = min(pys[:max_idx]) if max_idx > 0 else max_py
+        right_min = min(pys[max_idx + 1:]) if max_idx < n - 1 else max_py
+        left_margin = max_py - left_min
+        right_margin = max_py - right_min
+
+        # Asymmetric: stronger side >= min_margin, weaker >= min_margin * 0.5
+        strong = max(left_margin, right_margin)
+        weak = min(left_margin, right_margin)
+
+        if strong < self.min_margin_px or weak < self.min_margin_px * 0.4:
+            return None
+
+        vertex = pts[max_idx]
+        wx = vertex.get("world_x", 0)
+        wy = vertex.get("world_y", 0)
+
+        bounce = BounceEvent(
+            x=wx,
+            y=wy,
+            z=0.0,  # bounce is at ground level
+            timestamp=vertex.get("timestamp", 0),
+            in_court=_is_in_court(wx, wy),
+            frame_index=vertex.get("frame_index"),
+            confidence=min(1.0, strong / 100.0),
+        )
+
+        self._last_bounce_frame = fi
+        self._all_bounces.append(bounce)
+
+        # Keep only points after vertex
+        remaining = pts[max_idx + 1:]
+        self._window.clear()
+        for p in remaining:
+            self._window.append(p)
+
+        return bounce
+
+    def get_all_bounces(self) -> list[BounceEvent]:
+        return list(self._all_bounces)
+
+    def reset(self) -> None:
+        self._window.clear()
+        self._last_bounce_frame = -100
+        self._all_bounces.clear()
 
 
 # ---------------------------------------------------------------------------
