@@ -77,6 +77,10 @@ class Orchestrator:
         self._recording_lock = threading.Lock()
         self._recordings_dir = Path("recordings")
 
+        # Tracking data recording (JSONL alongside video)
+        self._data_file: Any = None
+        self._data_frame_counter: int = 0
+
         # Video test
         self._video_test_handle: Optional[_PipelineHandle] = None
         self._video_test_handles: dict[str, _PipelineHandle] = {}  # parallel handles
@@ -428,6 +432,15 @@ class Orchestrator:
                                 self._live_rallies.append(rally_result.to_dict())
                                 if len(self._live_rallies) > 20:
                                     self._live_rallies = self._live_rallies[-20:]
+
+                        # ── Write per-frame tracking data (JSONL) ──
+                        if self._recording and self._data_file is not None:
+                            self._write_tracking_frame(
+                                d1, d2, cam_names,
+                                x, y, z,
+                                smoothed_pt, best_bounce,
+                                now, capture_ts,
+                            )
                     except Exception as e:
                         logger.error("Triangulation error: %s", e)
 
@@ -468,6 +481,14 @@ class Orchestrator:
                     handle.status_dict["recording_enabled"] = True
             self._recording = True
             self._recording_info = {"start_time": rec_start, "files": files}
+            # Open JSONL data file for per-frame tracking data
+            data_path = str(self._recordings_dir / f"tracking_{ts}.jsonl")
+            try:
+                self._data_file = open(data_path, "w", encoding="utf-8")
+                self._data_frame_counter = 0
+                files["tracking_data"] = data_path
+            except Exception as e:
+                logger.warning("Failed to open tracking data file: %s", e)
             logger.info("Recording started: %s", files)
             return {"status": "recording", "files": files}
 
@@ -500,6 +521,14 @@ class Orchestrator:
                     writer.release()
                 files[name] = wr_info["path"]
             self._recording_writers.clear()
+            # Close tracking data file
+            if self._data_file is not None:
+                try:
+                    self._data_file.close()
+                    logger.info("Tracking data saved: %d frames", self._data_frame_counter)
+                except Exception:
+                    pass
+                self._data_file = None
             logger.info("Recording stopped (%.1fs, target %d frames), files: %s", elapsed, target_frames, files)
             result = {"status": "stopped", "files": files, "duration_s": round(elapsed, 1)}
             self._recording_info = {}
@@ -654,6 +683,55 @@ class Orchestrator:
 
     # ------------------------------------------------------------------
     # Status queries (called from FastAPI)
+    def _write_tracking_frame(
+        self, d1, d2, cam_names, x, y, z, smoothed_pt, bounce, now, capture_ts
+    ):
+        """Write one JSONL line with per-frame tracking data."""
+        def _cam_dict(d):
+            if d is None:
+                return None
+            return {
+                "px": round(d.get("pixel_x", 0), 1),
+                "py": round(d.get("pixel_y", 0), 1),
+                "conf": round(d.get("blob_sum", d.get("confidence", 0)), 2),
+                "wx": round(d.get("x", 0), 3),
+                "wy": round(d.get("y", 0), 3),
+            }
+
+        state = "tracking"
+        row = {
+            "frame": self._data_frame_counter,
+            "ts": round(now, 4),
+            "capture_ts": round(capture_ts, 4),
+            cam_names[0]: _cam_dict(d1),
+            cam_names[1]: _cam_dict(d2),
+        }
+
+        if x is not None:
+            row["3d"] = {"x": round(x, 3), "y": round(y, 3), "z": round(z, 3)}
+        else:
+            row["3d"] = None
+            state = "no_match"
+
+        if smoothed_pt is not None:
+            row["smoothed"] = {
+                "x": round(smoothed_pt["x"], 3),
+                "y": round(smoothed_pt["y"], 3),
+                "z": round(smoothed_pt["z"], 3),
+            }
+
+        if bounce is not None:
+            state = "bounce"
+            row["bounce"] = bounce.to_dict()
+
+        row["state"] = state
+
+        try:
+            self._data_file.write(json.dumps(row, ensure_ascii=False) + "\n")
+            self._data_frame_counter += 1
+        except Exception:
+            pass
+
     # ------------------------------------------------------------------
     def get_pipeline_status(self, name: str) -> PipelineStatus:
         handle = self._handles[name]
