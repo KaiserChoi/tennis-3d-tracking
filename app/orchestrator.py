@@ -276,8 +276,9 @@ class Orchestrator:
             if len(cam_names) == 2 and all(c in self._latest_detections for c in cam_names):
                 d1 = self._latest_detections[cam_names[0]]
                 d2 = self._latest_detections[cam_names[1]]
-                # Skip if we already triangulated this exact pair
-                pair_id = (d1["timestamp"], d2["timestamp"])
+                # Skip if we already triangulated this exact pair (by pixel coords)
+                pair_id = (d1.get("pixel_x"), d1.get("pixel_y"),
+                           d2.get("pixel_x"), d2.get("pixel_y"))
                 if pair_id == self._last_tri_pair:
                     pass  # already processed
                 elif abs(d1["timestamp"] - d2["timestamp"]) >= _MATCH_WINDOW:
