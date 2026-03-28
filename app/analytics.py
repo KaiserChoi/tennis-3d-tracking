@@ -160,8 +160,11 @@ class RallyState:
 
 
 def _is_in_court(x: float, y: float) -> bool:
-    """Check if (x, y) falls within the singles court boundaries."""
-    return 0 <= x <= COURT_X and 0 <= y <= COURT_Y
+    """Check if (x, y) falls within the singles court boundaries (V2 coords)."""
+    # V2: origin at court center, x in [-HW, +HW], y in [-HL, +HL]
+    HW = (SINGLES_X_MAX - SINGLES_X_MIN) / 2  # 2.745
+    HL = COURT_Y / 2  # 11.885
+    return abs(x) <= HW and abs(y) <= HL
 
 
 # ---------------------------------------------------------------------------
