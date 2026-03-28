@@ -68,6 +68,7 @@ def run_pipeline(
 
         frame_buffer: list = []
         frame_id_buffer: list[int] = []
+        capture_ts_buffer: list[float] = []  # wall-clock per frame
         last_frame_id = -1
         fps_counter = 0
         fps_time = time.time()
@@ -78,6 +79,7 @@ def run_pipeline(
                 time.sleep(0.002)
                 continue
             last_frame_id = frame_id
+            capture_ts = time.time()  # wall-clock at frame arrival
 
             # --- 向 frame_queue 放 JPEG（预览或录像）---
             if frame_queue is not None:
@@ -114,6 +116,7 @@ def run_pipeline(
 
             frame_buffer.append(frame)
             frame_id_buffer.append(frame_id)
+            capture_ts_buffer.append(capture_ts)
 
             if len(frame_buffer) < frames_in:
                 continue
@@ -122,6 +125,7 @@ def run_pipeline(
             if detector is None or not status_dict.get("inference_enabled", True):
                 frame_buffer.clear()
                 frame_id_buffer.clear()
+                capture_ts_buffer.clear()
                 continue
 
             # Inference on the buffer
@@ -154,6 +158,7 @@ def run_pipeline(
                     "pixel_y": py,
                     "confidence": conf,
                     "timestamp": time.time(),
+                    "capture_ts": capture_ts_buffer[0],  # oldest frame = action time
                 }
 
                 try:
@@ -172,6 +177,7 @@ def run_pipeline(
 
             frame_buffer.clear()
             frame_id_buffer.clear()
+            capture_ts_buffer.clear()
 
     except Exception as e:
         log.exception("Pipeline crashed: %s", e)

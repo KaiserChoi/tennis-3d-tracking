@@ -447,13 +447,15 @@ body{font-family:'Lato',sans-serif;background:var(--bg);color:var(--text);height
         </div>
 
         <!-- Mini Map -->
-        <div class="minimap-section">
+        <div class="minimap-section" style="position:relative">
           <div class="section-title">Mini Map</div>
           <canvas id="minimap" width="300" height="500"></canvas>
           <div class="minimap-footer" style="flex-direction:column;align-items:stretch;gap:6px">
             <div style="display:flex;align-items:center;gap:8px">
               <span class="speed-label">球速:</span>
               <span class="speed-value" id="ball-speed">- km/h</span>
+              <span class="speed-label" style="margin-left:auto">延迟:</span>
+              <span class="speed-value" id="latency-display">- ms</span>
             </div>
             <div style="display:flex;align-items:center;gap:12px">
               <span class="speed-label">Rally:</span>
@@ -465,6 +467,18 @@ body{font-family:'Lato',sans-serif;background:var(--bg);color:var(--text);height
             </div>
           </div>
         </div>
+
+        <!-- Rally Replay Overlay -->
+        <div id="rally-replay" style="display:none;position:absolute;top:0;left:0;right:0;bottom:0;
+          background:rgba(0,0,0,0.85);z-index:50;border-radius:12px;
+          flex-direction:column;align-items:center;justify-content:center;padding:12px;cursor:pointer"
+          onclick="this.style.display='none'">
+          <div style="color:#ffd700;font-size:14px;font-weight:700;margin-bottom:8px">RALLY REPLAY</div>
+          <canvas id="rally-replay-canvas" width="260" height="440"></canvas>
+          <div id="rally-replay-info" style="color:#94a3b8;font-size:11px;margin-top:6px;text-align:center"></div>
+          <div style="color:#555;font-size:10px;margin-top:4px">click to dismiss</div>
+        </div>
+      </div>
       </div>
 
       <!-- Right top: Video -->
@@ -1044,11 +1058,15 @@ function _renderGrid(cams){
 }
 
 // ---- Mini Map ----
-function drawCourt(canvas,bounces){
+// Ball trail buffer for minimap
+let _ballTrail=[];
+const _TRAIL_MAX=30;
+
+function drawCourt(canvas,bounces,liveBall){
   const ctx=canvas.getContext('2d'),W=canvas.width,H=canvas.height;
   const margin=12,cw=W-2*margin,ch=H-2*margin;
   const sx=cw/COURT_W,sy=ch/COURT_L;
-  function tx(x){return margin+(COURT_W-x)*sx}  // mirror X to match camera view
+  function tx(x){return margin+(COURT_W-x)*sx}
   function ty(y){return H-margin-y*sy}
 
   ctx.clearRect(0,0,W,H);
@@ -1068,19 +1086,40 @@ function drawCourt(canvas,bounces){
   ctx.beginPath();ctx.moveTo(tx(CX),ty(0));ctx.lineTo(tx(CX),ty(0.4));ctx.stroke();
   ctx.beginPath();ctx.moveTo(tx(CX),ty(COURT_L));ctx.lineTo(tx(CX),ty(COURT_L-0.4));ctx.stroke();
 
-  // Draw bounce markers — show LATEST 5 only, numbered 1=newest
-  // Green = IN, Red = OUT, fading opacity for older points
+  // ── Live ball trail ──
+  if(liveBall && liveBall.x!=null && liveBall.y!=null){
+    _ballTrail.push({x:liveBall.x, y:liveBall.y, t:Date.now()});
+    if(_ballTrail.length>_TRAIL_MAX) _ballTrail.shift();
+  }
+  if(_ballTrail.length>1){
+    ctx.beginPath();
+    for(let i=0;i<_ballTrail.length;i++){
+      const p=_ballTrail[i];
+      const px=tx(p.x),py=ty(p.y);
+      const alpha=0.15+(i/_ballTrail.length)*0.6;
+      if(i===0){ctx.moveTo(px,py)}
+      else{ctx.lineTo(px,py)}
+    }
+    ctx.strokeStyle='rgba(255,215,0,0.5)';ctx.lineWidth=2;ctx.stroke();
+    // Latest point: pulsing dot
+    const last=_ballTrail[_ballTrail.length-1];
+    const lx=tx(last.x),ly=ty(last.y);
+    ctx.beginPath();ctx.arc(lx,ly,4,0,Math.PI*2);
+    ctx.fillStyle='#ffd700';ctx.fill();
+    ctx.strokeStyle='#fff';ctx.lineWidth=1;ctx.stroke();
+  }
+
+  // ── Bounce markers — latest 5, numbered 1=newest ──
   if(bounces&&bounces.length){
     const last5 = bounces.slice(-5);
     last5.forEach((b,i)=>{
       const bx=tx(b.x),by=ty(b.y);
       const isIn = b.in_court;
       const color = isIn ? '#4caf50' : '#f44336';
-      const age = last5.length - 1 - i;  // 0=newest, 4=oldest
-      const num = age + 1;  // 1=newest, 5=oldest
-      const r = age === 0 ? 8 : 6;  // newest is larger
+      const age = last5.length - 1 - i;
+      const num = age + 1;
+      const r = age === 0 ? 8 : 6;
 
-      // Fade older: newest=full, older=progressively dimmer
       ctx.globalAlpha = age === 0 ? 1.0 : age === 1 ? 0.8 : age === 2 ? 0.6 : age === 3 ? 0.4 : 0.25;
 
       if(isIn){
@@ -1092,15 +1131,19 @@ function drawCourt(canvas,bounces){
         ctx.strokeStyle=color;ctx.lineWidth=2.5;ctx.stroke();
       }
 
-      // Number label (1=newest)
+      // Number label
       ctx.font='bold 9px Lato';ctx.fillStyle='#fff';
       ctx.textAlign='center';ctx.textBaseline='middle';
       ctx.fillText(num,bx,by+1);
       ctx.textAlign='start';ctx.textBaseline='alphabetic';
 
-      // IN/OUT label
+      // IN/OUT + speed label
       ctx.fillStyle=color;ctx.font='bold 8px Lato';
       ctx.fillText(isIn?'IN':'OUT',bx+r+4,by+3);
+      if(b.speed_kmh){
+        ctx.fillStyle='#ffd700';ctx.font='bold 9px Lato';
+        ctx.fillText(Math.round(b.speed_kmh)+'km/h',bx+r+4,by+14);
+      }
 
       ctx.globalAlpha=1.0;
     });
@@ -1523,6 +1566,85 @@ function _updateRecAVDuration(){
   if(txt)txt.textContent='🎤'+m+':'+ss;
 }
 
+// ── Rally replay ──
+let _lastRallyCount=0;
+let _rallyReplayTimer=null;
+
+function showRallyReplay(rally){
+  const panel=document.getElementById('rally-replay');
+  const canvas=document.getElementById('rally-replay-canvas');
+  const info=document.getElementById('rally-replay-info');
+  if(!panel||!canvas) return;
+
+  const ctx=canvas.getContext('2d'),W=canvas.width,H=canvas.height;
+  const margin=10,cw=W-2*margin,ch=H-2*margin;
+  const sx=cw/COURT_W,sy=ch/COURT_L;
+  function tx(x){return margin+(COURT_W-x)*sx}
+  function ty(y){return H-margin-y*sy}
+
+  ctx.clearRect(0,0,W,H);
+  // Court
+  ctx.fillStyle='#1a2e1a';ctx.fillRect(0,0,W,H);
+  ctx.fillStyle='#2d5a3d';ctx.fillRect(tx(COURT_W),ty(COURT_L),COURT_W*sx,COURT_L*sy);
+  ctx.fillStyle='#346845';ctx.fillRect(tx(COURT_W),ty(SRV_F),COURT_W*sx,(SRV_F-SRV_N)*sy);
+  ctx.strokeStyle='#fff';ctx.lineWidth=1;
+  ctx.strokeRect(tx(COURT_W),ty(COURT_L),COURT_W*sx,COURT_L*sy);
+  ctx.beginPath();ctx.moveTo(tx(COURT_W),ty(NET_Y));ctx.lineTo(tx(0),ty(NET_Y));
+  ctx.strokeStyle='#ccc';ctx.lineWidth=2;ctx.stroke();
+  ctx.strokeStyle='#fff';ctx.lineWidth=1;
+  [SRV_N,SRV_F].forEach(y=>{ctx.beginPath();ctx.moveTo(tx(COURT_W),ty(y));ctx.lineTo(tx(0),ty(y));ctx.stroke()});
+  ctx.beginPath();ctx.moveTo(tx(CX),ty(SRV_N));ctx.lineTo(tx(CX),ty(SRV_F));ctx.stroke();
+
+  // Draw all bounces in this rally with connecting arrows
+  const bounces=rally.bounces||[];
+  if(bounces.length>0){
+    // Connecting lines
+    ctx.beginPath();
+    ctx.strokeStyle='rgba(255,215,0,0.4)';ctx.lineWidth=1.5;ctx.setLineDash([4,3]);
+    for(let i=0;i<bounces.length;i++){
+      const bx=tx(bounces[i].x),by=ty(bounces[i].y);
+      if(i===0) ctx.moveTo(bx,by); else ctx.lineTo(bx,by);
+    }
+    ctx.stroke();ctx.setLineDash([]);
+
+    // Bounce markers
+    bounces.forEach((b,i)=>{
+      const bx=tx(b.x),by=ty(b.y);
+      const isIn=b.in_court;
+      const color=isIn?'#4caf50':'#f44336';
+      const r=6;
+
+      ctx.beginPath();ctx.arc(bx,by,r,0,Math.PI*2);
+      if(isIn){ctx.fillStyle=color;ctx.fill();ctx.strokeStyle='#fff';ctx.lineWidth=1;ctx.stroke()}
+      else{ctx.strokeStyle=color;ctx.lineWidth=2;ctx.stroke()}
+
+      // Number
+      ctx.font='bold 8px Lato';ctx.fillStyle='#fff';ctx.textAlign='center';ctx.textBaseline='middle';
+      ctx.fillText(i+1,bx,by+1);
+      ctx.textAlign='start';ctx.textBaseline='alphabetic';
+
+      // Speed
+      if(b.speed_kmh){
+        ctx.fillStyle='#ffd700';ctx.font='bold 8px Lato';
+        ctx.fillText(Math.round(b.speed_kmh)+'km/h',bx+r+3,by+3);
+      }
+      // IN/OUT
+      ctx.fillStyle=color;ctx.font='bold 7px Lato';
+      ctx.fillText(isIn?'IN':'OUT',bx+r+3,by-5);
+    });
+  }
+
+  // Info text
+  const dur=rally.duration?rally.duration.toFixed(1)+'s':'?';
+  const strokes=rally.stroke_count||bounces.length;
+  const reason=rally.end_reason||'?';
+  info.textContent=`${strokes} strokes · ${dur} · ended: ${reason}`;
+
+  panel.style.display='flex';
+  if(_rallyReplayTimer) clearTimeout(_rallyReplayTimer);
+  _rallyReplayTimer=setTimeout(()=>{panel.style.display='none'},8000);
+}
+
 async function poll(){
   try{
     const r=await fetch('/api/status');
@@ -1542,8 +1664,24 @@ async function poll(){
     const rallyState=analytics.rally_state||{};
 
     const b=d.latest_ball_3d;
-    drawCourt(document.getElementById('minimap'),recentBounces);
+    drawCourt(document.getElementById('minimap'),recentBounces,b);
     update3DCourt(b, recentBounces);
+
+    // Update ball speed from latest net crossing
+    try{
+      const ncr=await fetch('/api/net-crossing');
+      const nc=await ncr.json();
+      const speedEl=document.getElementById('ball-speed');
+      if(speedEl && nc.detected) speedEl.textContent=Math.round(nc.speed_kmh)+' km/h';
+    }catch(e){}
+
+    // Update latency display
+    try{
+      const lr=await fetch('/api/latency');
+      const lat=await lr.json();
+      const latEl=document.getElementById('latency-display');
+      if(latEl && lat.count>0) latEl.textContent=lat.p95_ms+'ms';
+    }catch(e){}
 
     // Update rally state display
     const stateEl=document.getElementById('rally-state');
@@ -1556,11 +1694,19 @@ async function poll(){
     }
     if(strokeEl) strokeEl.textContent=rallyState.stroke_count||0;
     if(bounceEl) bounceEl.textContent=recentBounces.length||0;
+
+    // Rally replay detection
+    const enhancedRallies=analytics.enhanced_rallies||[];
+    if(enhancedRallies.length>_lastRallyCount && enhancedRallies.length>0){
+      const latestRally=enhancedRallies[enhancedRallies.length-1];
+      showRallyReplay(latestRally);
+    }
+    _lastRallyCount=enhancedRallies.length;
   }catch(e){console.error(e)}
 }
 
 // Init
-drawCourt(document.getElementById('minimap'),[]);
+drawCourt(document.getElementById('minimap'),[],null);
 init3DCourt();
 setInterval(poll,500);
 

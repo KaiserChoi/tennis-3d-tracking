@@ -7,6 +7,7 @@ import multiprocessing as mp
 import threading
 import time
 from pathlib import Path
+from collections import deque
 from typing import Any, Optional
 
 import cv2
@@ -106,6 +107,10 @@ class Orchestrator:
         self._ws_thread: Optional[threading.Thread] = None
         self._ws_url = "wss://tennisserver.motionrivalry.com:8086/general"
         self._ws_enabled = False
+
+        # Latency instrumentation
+        self._latency_buffer: deque = deque(maxlen=1000)
+        self._latency_max: float = 0.0
 
         # ML Rally segmentation filter
         self._ml_rally_enabled = False
@@ -312,6 +317,14 @@ class Orchestrator:
                             cam68_world=WorldPoint2D(**d2),
                         )
 
+                        # --- Latency measurement ---
+                        cap_ts1 = d1.get("capture_ts", d1["timestamp"])
+                        cap_ts2 = d2.get("capture_ts", d2["timestamp"])
+                        latency_ms = (time.time() - min(cap_ts1, cap_ts2)) * 1000
+                        self._latency_buffer.append(latency_ms)
+                        if latency_ms > self._latency_max:
+                            self._latency_max = latency_ms
+
                         # --- Net crossing speed detection ---
                         now = time.time()
                         pt = {"x": x, "y": y, "z": z, "timestamp": now}
@@ -374,7 +387,12 @@ class Orchestrator:
                             ebounce = self._enhanced_bounce.update(pt, cam_dets)
                             rally_result = self._rally_sm.update(pt, ebounce)
                             if ebounce is not None:
-                                self._live_bounces.append(ebounce.to_dict())
+                                bd = ebounce.to_dict()
+                                # Attach most recent net crossing speed (within 3s)
+                                if self._latest_net_crossing and (now - self._latest_net_crossing["timestamp"]) < 3.0:
+                                    bd["speed_kmh"] = self._latest_net_crossing["speed_kmh"]
+                                    bd["speed_direction"] = self._latest_net_crossing["direction"]
+                                self._live_bounces.append(bd)
                             if rally_result is not None:
                                 self._live_rallies.append(rally_result.to_dict())
                                 if len(self._live_rallies) > 20:
@@ -642,10 +660,31 @@ class Orchestrator:
                 "completed_rallies": self._rally_tracker.get_completed_rallies(),
                 # Enhanced analytics
                 "enhanced_state": self._rally_sm.get_state_dict(),
-                "enhanced_rallies": [
-                    r.to_dict() for r in self._rally_sm.get_completed_rallies()
-                ],
+                "enhanced_rallies": self._enrich_rallies(),
             }
+
+    def _enrich_rallies(self) -> list[dict]:
+        """Enrich rally results with net crossing speeds for each bounce."""
+        rallies = []
+        for r in self._rally_sm.get_completed_rallies():
+            rd = r.to_dict()
+            # Attach speed_kmh to each bounce by finding the nearest net crossing
+            for b in rd.get("bounces", []):
+                bt = b.get("timestamp", 0)
+                best = None
+                best_dt = 3.0  # max 3 seconds lookback
+                for nc in self._net_crossings:
+                    dt = bt - nc["timestamp"]
+                    if 0 < dt < best_dt:
+                        best_dt = dt
+                        best = nc
+                if best:
+                    b["speed_kmh"] = best["speed_kmh"]
+                    b["speed_direction"] = best["direction"]
+            # Also add rally-level summary
+            rd["duration"] = rd.get("duration_seconds", 0)
+            rallies.append(rd)
+        return rallies
 
     def reset_live_analytics(self) -> None:
         """Reset analytics state (e.g. when starting a new session)."""
@@ -664,6 +703,20 @@ class Orchestrator:
     def get_net_crossings(self) -> list[dict]:
         """Return recent net crossing events."""
         return list(self._net_crossings[-20:])
+
+    def get_latency_stats(self) -> dict:
+        """Return end-to-end latency statistics (capture → 3D output)."""
+        buf = list(self._latency_buffer)
+        if not buf:
+            return {"count": 0, "p50_ms": 0, "p95_ms": 0, "max_ms": 0}
+        buf_sorted = sorted(buf)
+        n = len(buf_sorted)
+        return {
+            "count": n,
+            "p50_ms": round(buf_sorted[n // 2], 1),
+            "p95_ms": round(buf_sorted[min(int(n * 0.95), n - 1)], 1),
+            "max_ms": round(self._latency_max, 1),
+        }
 
     def enable_3d_display(self, url: str = None) -> dict:
         """Enable WebSocket push to 3D display."""

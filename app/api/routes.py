@@ -102,6 +102,13 @@ async def reset_analytics():
 
 # ---- Net Crossing Speed ----
 
+@router.get("/api/latency")
+async def latency_stats():
+    """End-to-end latency statistics (capture → 3D output)."""
+    orch = _get_orch()
+    return orch.get_latency_stats()
+
+
 @router.get("/api/net-crossing")
 async def net_crossing():
     """Get the latest net crossing event with ball speed."""
