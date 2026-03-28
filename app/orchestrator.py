@@ -20,6 +20,7 @@ from app.schemas import BallPosition3D, PipelineStatus, SystemStatus, WorldPoint
 from app.analytics import (
     BounceDetector,
     EnhancedBounceDetector,
+    HybridBounceDetector,
     RallyStateMachine,
     RallyTracker,
     run_batch_analytics,
@@ -87,7 +88,14 @@ class Orchestrator:
         self._live_bounces: list[dict] = []
         # Enhanced analytics (event-driven state machine)
         self._enhanced_bounce = EnhancedBounceDetector()
+        self._hybrid_bounce = HybridBounceDetector()
         self._rally_sm = RallyStateMachine()
+
+        # Savitzky-Golay smoothing buffer (matches offline smooth_trajectory_sg)
+        self._sg_buffer: list[dict] = []  # raw 3D points with timestamps
+        self._sg_window = 11
+        self._sg_poly = 3
+        self._sg_max_gap = 3  # frames gap to split segments
         self._live_rallies: list[dict] = []
         self._analytics_lock = threading.Lock()
 
@@ -243,7 +251,7 @@ class Orchestrator:
             pos1 = cam_positions.get(cam_names[0])
             pos2 = cam_positions.get(cam_names[1])
             if pos1 and pos2:
-                live_matcher = MultiBlobMatcher(pos1, pos2)
+                live_matcher = MultiBlobMatcher(pos1, pos2, valid_z_range=(0.0, 8.0))
 
         while not self._stopped.is_set():
             got_any = False
@@ -396,14 +404,22 @@ class Orchestrator:
                                         "speed": self._latest_net_crossing["speed_kmh"] if self._latest_net_crossing else 0,
                                         "timestamp": int(now * 1000),
                                     })
-                            # Enhanced analytics
+                            # Smooth trajectory (matches offline SG filter)
+                            smoothed_pt = self._smooth_latest(pt)
+
+                            # Hybrid bounce detection (matches offline detect_bounces)
+                            hbounce = self._hybrid_bounce.update(
+                                smoothed_pt or pt, cam_dets
+                            )
+                            # Also run enhanced for rally state machine
                             ebounce = self._enhanced_bounce.update(pt, cam_dets)
-                            rally_result = self._rally_sm.update(pt, ebounce)
-                            if ebounce is not None:
-                                bd = ebounce.to_dict()
-                                bd["capture_ts"] = capture_ts  # when the frame was actually captured
-                                bd["detect_delay"] = round(now - capture_ts, 2)  # detection pipeline delay
-                                # Attach most recent net crossing speed (within 3s)
+                            # Use hybrid bounce if available, fall back to enhanced
+                            best_bounce = hbounce or ebounce
+                            rally_result = self._rally_sm.update(pt, best_bounce)
+                            if best_bounce is not None:
+                                bd = best_bounce.to_dict()
+                                bd["capture_ts"] = capture_ts
+                                bd["detect_delay"] = round(now - capture_ts, 2)
                                 if self._latest_net_crossing and (now - self._latest_net_crossing["timestamp"]) < 3.0:
                                     bd["speed_kmh"] = self._latest_net_crossing["speed_kmh"]
                                     bd["speed_direction"] = self._latest_net_crossing["direction"]
@@ -677,6 +693,63 @@ class Orchestrator:
                 "enhanced_state": self._rally_sm.get_state_dict(),
                 "enhanced_rallies": self._enrich_rallies(),
             }
+
+    def _smooth_latest(self, pt: dict) -> dict | None:
+        """Add a raw 3D point to the SG buffer and return a smoothed point.
+
+        Matches offline ``smooth_trajectory_sg()`` logic: applies Savitzky-Golay
+        filter to recent continuous points and returns the smoothed value at the
+        midpoint of the window (best smoothing quality).
+
+        Returns None if not enough points yet for smoothing.
+        """
+        from scipy.signal import savgol_filter
+
+        self._sg_buffer.append(pt)
+        if len(self._sg_buffer) > 60:
+            self._sg_buffer = self._sg_buffer[-60:]
+
+        buf = self._sg_buffer
+        n = len(buf)
+        if n < self._sg_window:
+            return pt  # not enough points, pass through raw
+
+        # Find the latest continuous segment (no gap > sg_max_gap frames apart)
+        # We use timestamp difference: max gap ~0.15s at ~25fps = 3 frames
+        seg_start = n - 1
+        for i in range(n - 2, -1, -1):
+            dt = buf[i + 1]["timestamp"] - buf[i]["timestamp"]
+            if dt > 0.2:  # >0.2s gap = new segment
+                break
+            seg_start = i
+
+        seg = buf[seg_start:]
+        if len(seg) < self._sg_window:
+            return pt  # segment too short
+
+        xs = np.array([p["x"] for p in seg])
+        ys = np.array([p["y"] for p in seg])
+        zs = np.array([p["z"] for p in seg])
+
+        xs_s = savgol_filter(xs, self._sg_window, self._sg_poly)
+        ys_s = savgol_filter(ys, self._sg_window, self._sg_poly)
+        zs_s = savgol_filter(zs, self._sg_window, self._sg_poly)
+        zs_s = np.maximum(zs_s, 0.0)
+
+        # Return the smoothed point at the midpoint of the window end
+        # (the latest point with full context on both sides)
+        mid = len(seg) - 1 - self._sg_window // 2
+        if mid < 0:
+            mid = len(seg) - 1
+
+        src = seg[mid]
+        return {
+            "x": float(xs_s[mid]),
+            "y": float(ys_s[mid]),
+            "z": float(zs_s[mid]),
+            "timestamp": src["timestamp"],
+            "capture_ts": src.get("capture_ts", src["timestamp"]),
+        }
 
     def _enrich_rallies(self) -> list[dict]:
         """Enrich rally results with net crossing speeds for each bounce."""

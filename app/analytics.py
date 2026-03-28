@@ -702,6 +702,219 @@ class EnhancedBounceDetector:
 
 
 # ---------------------------------------------------------------------------
+# HybridBounceDetector — streaming port of offline detect_bounces()
+# ---------------------------------------------------------------------------
+
+
+class HybridBounceDetector:
+    """Streaming version of the offline hybrid V-shape + parabolic bounce detector.
+
+    Maintains a sliding window of smoothed 3D points and applies the same
+    detection logic as ``render_tracking_video.detect_bounces()``:
+        1. V-shape margins (z dip with high sides)
+        2. Parabolic split ratio (separate fits left/right of candidate)
+        3. Combined decision (strong V alone, or both signals moderate)
+        4. Dense segment filter (enough points nearby)
+        5. Speed filter (ball must be moving ≥3 m/s)
+        6. NMS cooldown (min gap between bounces)
+    """
+
+    def __init__(
+        self,
+        buf_size: int = 60,
+        v_window: int = 8,
+        half_wins: tuple = (4, 6, 8),
+        z_max: float = 0.8,
+        min_seg_len: int = 15,
+        min_dense: int = 20,
+        dense_range: int = 20,
+        min_speed: float = 3.0,
+        speed_dt: int = 3,
+        cooldown_frames: int = 12,
+        fps: float = 25.0,
+    ):
+        self._buf: list[dict] = []
+        self._buf_size = buf_size
+        self._v_window = v_window
+        self._half_wins = half_wins
+        self._z_max = z_max
+        self._min_seg_len = min_seg_len
+        self._min_dense = min_dense
+        self._dense_range = dense_range
+        self._min_speed = min_speed
+        self._speed_dt = speed_dt
+        self._cooldown = cooldown_frames
+        self._fps = fps
+        self._last_bounce_ts: float = 0.0
+
+    def reset(self):
+        self._buf.clear()
+        self._last_bounce_ts = 0.0
+
+    def update(
+        self,
+        point_3d: dict,
+        cam_detections: Optional[dict] = None,
+    ) -> Optional[BounceEvent]:
+        """Process one smoothed 3D point. Returns BounceEvent if bounce detected."""
+        self._buf.append({"pt": point_3d, "cam": cam_detections or {}})
+        if len(self._buf) > self._buf_size:
+            self._buf = self._buf[-self._buf_size:]
+
+        n = len(self._buf)
+        margin_needed = max(max(self._half_wins), self._v_window)
+        if n < self._min_seg_len or n < 2 * margin_needed + 1:
+            return None
+
+        # Arrays for the buffer
+        xs = np.array([e["pt"]["x"] for e in self._buf])
+        ys = np.array([e["pt"]["y"] for e in self._buf])
+        zs = np.array([e["pt"]["z"] for e in self._buf])
+        ts = np.array([e["pt"]["timestamp"] for e in self._buf])
+
+        # Find continuous segment at the end of buffer (no gap > 0.2s)
+        seg_start = n - 1
+        for i in range(n - 2, -1, -1):
+            if ts[i + 1] - ts[i] > 0.2:
+                break
+            seg_start = i
+        seg_len = n - seg_start
+        if seg_len < self._min_seg_len:
+            return None
+
+        # Check candidate at position: end of segment minus margin
+        # (we check the point that has enough context on both sides)
+        check_idx = n - 1 - margin_needed
+        if check_idx < seg_start + margin_needed:
+            return None
+
+        i = check_idx
+        z_i = zs[i]
+        if z_i > self._z_max:
+            return None
+
+        # Court bounds check
+        x_i, y_i = xs[i], ys[i]
+        if x_i < SINGLES_X_MIN - 1.0 or x_i > SINGLES_X_MAX + 1.0:
+            return None
+        if y_i < -1.0 or y_i > COURT_Y + 1.0:
+            return None
+
+        # Cooldown
+        pt_ts = ts[i]
+        if pt_ts - self._last_bounce_ts < self._cooldown / self._fps:
+            return None
+
+        # ── Signal 1: V-shape margins ──
+        z_before = zs[i - self._v_window:i]
+        z_after = zs[i + 1:i + self._v_window + 1]
+        if len(z_before) < self._v_window or len(z_after) < self._v_window:
+            return None
+
+        margin_before = float(np.mean(z_before) - z_i)
+        margin_after = float(np.mean(z_after) - z_i)
+        min_margin = min(margin_before, margin_after)
+        max_margin = max(margin_before, margin_after)
+        v_score = margin_before + margin_after
+
+        v_strong = min_margin >= 0.10 and max_margin >= 0.20
+        v_moderate = min_margin >= 0.05 and max_margin >= 0.10
+
+        # ── Signal 2: Parabolic split ratio ──
+        best_ratio = 0.0
+        for hw in self._half_wins:
+            li = list(range(max(seg_start, i - hw), i + 1))
+            ri = list(range(i, min(n, i + hw + 1)))
+            if len(li) < 3 or len(ri) < 3:
+                continue
+            ji = list(range(max(seg_start, i - hw), min(n, i + hw + 1)))
+
+            def _fit_res(indices):
+                if len(indices) < 3:
+                    return float("inf")
+                t = (ts[indices] - ts[indices[0]])
+                z = zs[indices]
+                try:
+                    c = np.polyfit(t, z, 2)
+                    return float(np.mean((z - np.polyval(c, t)) ** 2))
+                except (np.linalg.LinAlgError, ValueError):
+                    return float("inf")
+
+            rl = _fit_res(np.array(li))
+            rr = _fit_res(np.array(ri))
+            rj = _fit_res(np.array(ji))
+            rs = (rl * len(li) + rr * len(ri)) / (len(li) + len(ri))
+            ratio = rj / rs if rs > 1e-8 else 0
+            if ratio > best_ratio:
+                best_ratio = ratio
+
+        p_strong = best_ratio >= 5.0
+        p_moderate = best_ratio >= 2.0
+
+        # ── Combined decision ──
+        accepted = False
+        if v_strong:
+            accepted = True
+        elif p_strong and v_moderate:
+            accepted = True
+        elif v_moderate and p_moderate and z_i < 0.4:
+            accepted = True
+
+        if not accepted:
+            return None
+
+        # ── Dense segment filter ──
+        nearby = sum(1 for j in range(max(0, i - self._dense_range),
+                                       min(n, i + self._dense_range + 1))
+                     if j >= seg_start)
+        if nearby < self._min_dense:
+            return None
+
+        # ── Speed filter ──
+        i_back = max(seg_start, i - self._speed_dt)
+        i_fwd = min(n - 1, i + self._speed_dt)
+        dt = ts[i_fwd] - ts[i_back]
+        if dt > 1e-6:
+            dx = xs[i_fwd] - xs[i_back]
+            dy = ys[i_fwd] - ys[i_back]
+            dz = zs[i_fwd] - zs[i_back]
+            speed = float(np.sqrt(dx**2 + dy**2 + dz**2) / dt)
+            if speed < self._min_speed:
+                return None
+
+        # ── Bounce accepted! ──
+        self._last_bounce_ts = pt_ts
+
+        # Get cam pixel coords at this point
+        cam_dets = self._buf[i]["cam"]
+        cam_px = {}
+        if cam_dets:
+            for cname, det in cam_dets.items():
+                if det and det.get("pixel_x") is not None:
+                    cam_px[cname] = [det["pixel_x"], det["pixel_y"]]
+
+        in_court = (SINGLES_X_MIN <= x_i <= SINGLES_X_MAX
+                    and 0 <= y_i <= COURT_Y)
+
+        bounce = BounceEvent(
+            x=float(x_i),
+            y=float(y_i),
+            z=float(z_i),
+            timestamp=float(pt_ts),
+            in_court=in_court,
+            confidence=round(min(1.0, v_score + 0.1 * best_ratio), 3),
+            source_camera="3d",
+            cam_pixels=cam_px,
+        )
+        logger.info(
+            "HybridBounce: (%.2f, %.2f, z=%.2f) %s v=%.2f p=%.1f spd=%.0f",
+            x_i, y_i, z_i, "IN" if in_court else "OUT",
+            v_score, best_ratio, speed if dt > 1e-6 else 0,
+        )
+        return bounce
+
+
+# ---------------------------------------------------------------------------
 # RallyStateMachine
 # ---------------------------------------------------------------------------
 
