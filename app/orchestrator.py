@@ -64,6 +64,7 @@ class Orchestrator:
         self._latest_frames: dict[str, bytes] = {}
         self._latest_3d: Optional[BallPosition3D] = None
         self._triangulation_active = False
+        self._last_tri_pair: tuple = (None, None)  # (d1.ts, d2.ts) to dedup
         self._consumer_thread: Optional[threading.Thread] = None
         self._stopped = threading.Event()
         self._inference_enabled: bool = True  # 全局推理开关
@@ -275,8 +276,13 @@ class Orchestrator:
             if len(cam_names) == 2 and all(c in self._latest_detections for c in cam_names):
                 d1 = self._latest_detections[cam_names[0]]
                 d2 = self._latest_detections[cam_names[1]]
-                dt = abs(d1["timestamp"] - d2["timestamp"])
-                if dt < _MATCH_WINDOW:
+                # Skip if we already triangulated this exact pair
+                pair_id = (d1["timestamp"], d2["timestamp"])
+                if pair_id == self._last_tri_pair:
+                    pass  # already processed
+                elif abs(d1["timestamp"] - d2["timestamp"]) >= _MATCH_WINDOW:
+                    pass  # too far apart
+                else:
                     # --- Confidence filtering (top1_conf20) ---
                     blob_sum1 = d1.get("blob_sum", d1.get("confidence", 1.0))
                     blob_sum2 = d2.get("blob_sum", d2.get("confidence", 1.0))
@@ -316,6 +322,7 @@ class Orchestrator:
                             cam66_world=WorldPoint2D(**d1),
                             cam68_world=WorldPoint2D(**d2),
                         )
+                        self._last_tri_pair = pair_id
 
                         # --- Latency measurement ---
                         cap_ts1 = d1.get("capture_ts", d1["timestamp"])
