@@ -116,7 +116,7 @@ body{font-family:'Lato',sans-serif;background:var(--bg);color:var(--text);height
 #video-container.mode-2{grid-template-columns:1fr 1fr;grid-template-rows:1fr}
 #video-container.mode-3,#video-container.mode-4{grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr}
 .vid-cell{position:relative;overflow:hidden;background:#111;cursor:pointer;min-height:0}
-.vid-cell img{width:100%;height:100%;object-fit:contain;display:block;background:#000}
+.vid-cell img,.vid-cell canvas{width:100%;height:100%;object-fit:contain;display:block;background:#000}
 .vid-label{position:absolute;top:6px;left:8px;font-size:9px;font-weight:700;background:rgba(0,0,0,.6);color:#fff;padding:2px 8px;border-radius:3px;pointer-events:none;z-index:1}
 .vid-cell:hover .vid-label{color:var(--accent)}
 .vid-empty{display:flex;align-items:center;justify-content:center;color:var(--text-muted);font-size:14px;background:#181818;width:100%;height:100%}
@@ -1035,9 +1035,10 @@ function _renderSingle(cam){
     return;
   }
   c.innerHTML=`<div class="vid-cell">
-    <img src="/api/camera/${cam}/stream" alt="${cam}">
-    <span class="vid-label">${cam}</span>
+    <canvas class="vid-canvas" data-cam="${cam}" width="960" height="540"></canvas>
+    <span class="vid-label">${cam} <span style="color:#ffd700;font-size:10px" id="sync-badge">SYNC</span></span>
   </div>`;
+  _initVideoSync(cam);
   document.getElementById('active-cam').textContent=cam;
 }
 
@@ -1051,10 +1052,115 @@ function _renderGrid(cams){
   c.className='mode-'+Math.min(n,4);
   c.innerHTML=cams.map(cam=>`
     <div class="vid-cell" onclick="selectCamera('${cam}');setViewMode('single')" title="点击全屏">
-      <img src="/api/camera/${cam}/stream" alt="${cam}">
-      <span class="vid-label">${cam}</span>
+      <canvas class="vid-canvas" data-cam="${cam}" width="960" height="540"></canvas>
+      <span class="vid-label">${cam} <span style="color:#ffd700;font-size:10px">SYNC</span></span>
     </div>`).join('');
+  cams.forEach(cam=>_initVideoSync(cam));
   document.getElementById('active-cam').textContent=cams.join(' / ');
+}
+
+// ---- Video Sync: delayed canvas rendering + bounce overlay ----
+const _frameBufs={};  // cam -> {img, frames:[], canvas, captureId}
+let _videoDelayMs=800;
+const _FRAME_BUF_MAX=60; // ~2s at 30fps
+const _delayHistory=[];
+let _activeBounceOverlays=[]; // [{cam, px, py, startTs, duration, inCourt}]
+
+function _initVideoSync(cam){
+  if(_frameBufs[cam] && _frameBufs[cam].img) return; // already initialized
+  const hiddenImg=new Image();
+  hiddenImg.crossOrigin='anonymous';
+  hiddenImg.src=`/api/camera/${cam}/stream`;
+  const canvasEl=document.querySelector(`.vid-canvas[data-cam="${cam}"]`);
+  _frameBufs[cam]={img:hiddenImg, frames:[], canvas:canvasEl,
+    captureId:setInterval(()=>{
+      const buf=_frameBufs[cam];
+      if(!buf||!buf.canvas||!buf.img.naturalWidth) return;
+      // Capture current MJPEG frame into an offscreen canvas
+      const oc=document.createElement('canvas');
+      oc.width=buf.img.naturalWidth; oc.height=buf.img.naturalHeight;
+      oc.getContext('2d').drawImage(buf.img,0,0);
+      buf.frames.push({oc, ts:Date.now()});
+      if(buf.frames.length>_FRAME_BUF_MAX) buf.frames.shift();
+    },33)
+  };
+}
+
+function _destroyVideoSync(cam){
+  const buf=_frameBufs[cam];
+  if(!buf) return;
+  if(buf.captureId) clearInterval(buf.captureId);
+  if(buf.img) buf.img.src='';
+  delete _frameBufs[cam];
+}
+
+function _renderDelayedFrames(){
+  const targetTs=Date.now()-_videoDelayMs;
+  for(const[cam,buf] of Object.entries(_frameBufs)){
+    if(!buf.canvas||buf.frames.length===0) continue;
+    // Find best frame <= targetTs
+    let best=null;
+    for(const f of buf.frames){
+      if(f.ts<=targetTs) best=f; else break;
+    }
+    if(!best) best=buf.frames[0]; // show oldest if delay not met yet
+    const ctx=buf.canvas.getContext('2d');
+    buf.canvas.width=best.oc.width; buf.canvas.height=best.oc.height;
+    ctx.drawImage(best.oc,0,0);
+
+    // Draw bounce overlays on this camera's canvas
+    const now=Date.now();
+    for(const o of _activeBounceOverlays){
+      if(o.cam!==cam) continue;
+      const age=(now-o.startTs)/o.duration;
+      if(age>=1) continue;
+      const sx=buf.canvas.width/1920, sy=buf.canvas.height/1080;
+      const cx=o.px*sx, cy=o.py*sy;
+      const r=20+age*25;
+      ctx.beginPath();ctx.arc(cx,cy,r,0,Math.PI*2);
+      ctx.strokeStyle=o.inCourt?'rgba(76,175,80,'+(1-age*0.8)+')':'rgba(244,67,54,'+(1-age*0.8)+')';
+      ctx.lineWidth=3;ctx.stroke();
+      // Inner dot
+      if(age<0.3){
+        ctx.beginPath();ctx.arc(cx,cy,5,0,Math.PI*2);
+        ctx.fillStyle=o.inCourt?'#4caf50':'#f44336';ctx.fill();
+      }
+      // Label
+      ctx.fillStyle='#fff';ctx.font='bold 14px Lato';ctx.globalAlpha=1-age*0.8;
+      ctx.fillText(o.inCourt?'IN':'OUT',cx+r+5,cy+5);
+      ctx.globalAlpha=1;
+    }
+    // Purge expired overlays
+    _activeBounceOverlays=_activeBounceOverlays.filter(o=>Date.now()-o.startTs<o.duration);
+
+    // SYNC label with delay value
+    ctx.fillStyle='rgba(255,215,0,0.6)';ctx.font='bold 11px Lato';
+    ctx.fillText('SYNC '+(_videoDelayMs/1000).toFixed(1)+'s',8,buf.canvas.height-8);
+  }
+  requestAnimationFrame(_renderDelayedFrames);
+}
+requestAnimationFrame(_renderDelayedFrames);
+
+function _updateVideoDelay(detectDelaySec){
+  _delayHistory.push(detectDelaySec*1000);
+  if(_delayHistory.length>20) _delayHistory.shift();
+  const sorted=[..._delayHistory].sort((a,b)=>a-b);
+  _videoDelayMs=Math.max(500,Math.min(2000,sorted[Math.floor(sorted.length*0.75)]));
+}
+
+function _onNewBounce(b){
+  // Update adaptive delay
+  if(b.detect_delay) _updateVideoDelay(b.detect_delay);
+  // Create bounce overlays on each camera
+  if(b.cam_pixels){
+    for(const[cam,pxpy] of Object.entries(b.cam_pixels)){
+      _activeBounceOverlays.push({
+        cam, px:pxpy[0], py:pxpy[1],
+        startTs:Date.now(), duration:2500,
+        inCourt:b.in_court
+      });
+    }
+  }
 }
 
 // ---- Mini Map ----
@@ -1575,6 +1681,7 @@ function _updateRecAVDuration(){
 
 // ── Rally replay ──
 let _lastRallyCount=0;
+let _lastBounceCount=0;
 let _rallyReplayTimer=null;
 
 function showRallyReplay(rally){
@@ -1670,6 +1777,14 @@ async function poll(){
     const analytics=d.analytics||{};
     const recentBounces=analytics.recent_bounces||[];
     const rallyState=analytics.rally_state||{};
+
+    // Detect new bounces → trigger video overlay + adaptive delay
+    if(recentBounces.length>_lastBounceCount){
+      for(let i=_lastBounceCount;i<recentBounces.length;i++){
+        _onNewBounce(recentBounces[i]);
+      }
+    }
+    _lastBounceCount=recentBounces.length;
 
     const b=d.latest_ball_3d;
     drawCourt(document.getElementById('minimap'),recentBounces,b);

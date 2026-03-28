@@ -65,13 +65,14 @@ class BounceEvent:
     confidence: float = 1.0
     source_camera: str = "3d"  # "cam66" | "cam68" | "interpolated" | "3d"
     side: str = ""  # "near" | "far"
+    cam_pixels: dict = field(default_factory=dict)  # {"cam66": [px, py], ...}
 
     def __post_init__(self):
         if not self.side:
             self.side = "near" if self.y < NET_Y else "far"
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "x": round(self.x, 4),
             "y": round(self.y, 4),
             "z": round(self.z, 4),
@@ -82,6 +83,9 @@ class BounceEvent:
             "source_camera": self.source_camera,
             "side": self.side,
         }
+        if self.cam_pixels:
+            d["cam_pixels"] = self.cam_pixels
+        return d
 
 
 class RallyEndReason(str, Enum):
@@ -595,6 +599,13 @@ class EnhancedBounceDetector:
             vertex_pt, cam_dets, pts, best_k
         )
 
+        # Collect per-camera pixel coordinates at bounce frame
+        cam_px = {}
+        if cam_dets:
+            for cname, det in cam_dets.items():
+                if det and det.get("pixel_x") is not None:
+                    cam_px[cname] = [det["pixel_x"], det["pixel_y"]]
+
         bounce = BounceEvent(
             x=landing_x,
             y=landing_y,
@@ -604,6 +615,7 @@ class EnhancedBounceDetector:
             frame_index=vertex_pt.get("frame_index"),
             confidence=self._compute_confidence(pts, best_k, zs),
             source_camera=source,
+            cam_pixels=cam_px,
         )
 
         self._last_bounce_frame = fi
