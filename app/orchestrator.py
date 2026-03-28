@@ -32,7 +32,7 @@ from app.triangulation import triangulate
 logger = logging.getLogger(__name__)
 
 # Maximum age (seconds) for pairing detections from two cameras.
-_MATCH_WINDOW = 0.1
+_MATCH_WINDOW = 0.5  # max age difference (seconds) between camera captures for pairing
 
 
 class _PipelineHandle:
@@ -293,7 +293,11 @@ class Orchestrator:
                 # Skip if we already triangulated this exact pair (by pixel coords)
                 pair_id = (d1.get("pixel_x"), d1.get("pixel_y"),
                            d2.get("pixel_x"), d2.get("pixel_y"))
-                dt_pair = abs(d1["timestamp"] - d2["timestamp"])
+                # Use capture_ts (frame arrival time) for matching, not timestamp (detection creation time)
+                # Two subprocesses finish inference at different times, but frames arrive ~simultaneously
+                t1 = d1.get("capture_ts", d1["timestamp"])
+                t2 = d2.get("capture_ts", d2["timestamp"])
+                dt_pair = abs(t1 - t2)
                 if pair_id == self._last_tri_pair:
                     pass  # already processed
                 elif dt_pair >= _MATCH_WINDOW:
