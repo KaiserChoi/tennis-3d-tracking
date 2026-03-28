@@ -962,7 +962,16 @@ body{font-family:'Lato',sans-serif;background:var(--bg);color:var(--text);height
 // ============================================================
 // Dashboard JS (original)
 // ============================================================
-const COURT_W=8.23,COURT_L=23.77,NET_Y=11.885,SRV_N=5.485,SRV_F=18.285,CX=4.115;
+// Court constants — matches render_tracking_video.py draw_court() (verified offline)
+const SX_MIN=1.37,SX_MAX=6.86,SW=5.49,CL=23.77;
+const NET_Y=11.885,SRV_N=5.485,SRV_F=18.285,CX_LINE=(SX_MIN+SX_MAX)/2;
+// View area with padding so out-of-court bounces are visible
+const PAD_X=2.0,PAD_Y=3.0;
+const VIEW_X_MIN=SX_MIN-PAD_X,VIEW_X_MAX=SX_MAX+PAD_X;
+const VIEW_Y_MIN=0-PAD_Y,VIEW_Y_MAX=CL+PAD_Y;
+const VIEW_W=VIEW_X_MAX-VIEW_X_MIN,VIEW_H=VIEW_Y_MAX-VIEW_Y_MIN;
+// Legacy aliases (used by 3D map, Three.js etc)
+const COURT_W=8.23,COURT_L=23.77,CX=4.115;
 
 const TEST_BALLS=[
   {label:'B1',x:6.809,y:1.816, z:0.177,color:'#4f88fa'},
@@ -1170,28 +1179,40 @@ const _TRAIL_MAX=30;
 
 function drawCourt(canvas,bounces,liveBall){
   const ctx=canvas.getContext('2d'),W=canvas.width,H=canvas.height;
-  const margin=12,cw=W-2*margin,ch=H-2*margin;
-  const sx=cw/COURT_W,sy=ch/COURT_L;
-  // cam68 perspective: near baseline (y=0) at top, X mirrored
-  function tx(x){return margin+(COURT_W-x)*sx}
-  function ty(y){return margin+y*sy}
+  const margin=8,dw=W-2*margin,dh=H-2*margin;
+
+  // Coordinate transform — identical to render_tracking_video.py draw_court() w2c()
+  // with padding so out-of-court bounces are visible
+  function w2cx(wx){return margin+((wx-VIEW_X_MIN)/VIEW_W)*dw}
+  function w2cy(wy){return margin+(1.0-(wy-VIEW_Y_MIN)/VIEW_H)*dh}  // Y=0 at bottom
 
   ctx.clearRect(0,0,W,H);
   ctx.fillStyle='#1a2e1a';ctx.fillRect(0,0,W,H);
-  ctx.fillStyle='#2d5a3d';
-  ctx.fillRect(tx(COURT_W),ty(0),COURT_W*sx,COURT_L*sy);
-  ctx.fillStyle='#346845';
-  ctx.fillRect(tx(COURT_W),ty(SRV_N),COURT_W*sx,(SRV_F-SRV_N)*sy);
 
+  // Court fill (singles area)
+  const cl=w2cx(SX_MIN),ct=w2cy(CL),cr=w2cx(SX_MAX),cb=w2cy(0);
+  ctx.fillStyle='#2d5a3d';
+  ctx.fillRect(cl,ct,cr-cl,cb-ct);
+  // Service box fill
+  const st=w2cy(SRV_F),sb=w2cy(SRV_N);
+  ctx.fillStyle='#346845';
+  ctx.fillRect(cl,st,cr-cl,sb-st);
+
+  // Court outline
   ctx.strokeStyle='#fff';ctx.lineWidth=1.5;
-  ctx.strokeRect(tx(COURT_W),ty(0),COURT_W*sx,COURT_L*sy);
-  ctx.beginPath();ctx.moveTo(tx(COURT_W),ty(NET_Y));ctx.lineTo(tx(0),ty(NET_Y));
+  ctx.strokeRect(cl,ct,cr-cl,cb-ct);
+  // Net
+  ctx.beginPath();ctx.moveTo(cl,w2cy(NET_Y));ctx.lineTo(cr,w2cy(NET_Y));
   ctx.strokeStyle='#ccc';ctx.lineWidth=2.5;ctx.stroke();
-  ctx.strokeStyle='#fff';ctx.lineWidth=1.5;
-  [SRV_N,SRV_F].forEach(y=>{ctx.beginPath();ctx.moveTo(tx(COURT_W),ty(y));ctx.lineTo(tx(0),ty(y));ctx.stroke()});
-  ctx.beginPath();ctx.moveTo(tx(CX),ty(SRV_N));ctx.lineTo(tx(CX),ty(SRV_F));ctx.stroke();
-  ctx.beginPath();ctx.moveTo(tx(CX),ty(0));ctx.lineTo(tx(CX),ty(0.4));ctx.stroke();
-  ctx.beginPath();ctx.moveTo(tx(CX),ty(COURT_L));ctx.lineTo(tx(CX),ty(COURT_L-0.4));ctx.stroke();
+  // Service lines
+  ctx.strokeStyle='#fff';ctx.lineWidth=1;
+  [SRV_N,SRV_F].forEach(y=>{ctx.beginPath();ctx.moveTo(cl,w2cy(y));ctx.lineTo(cr,w2cy(y));ctx.stroke()});
+  // Center service line
+  const cmx=w2cx(CX_LINE);
+  ctx.beginPath();ctx.moveTo(cmx,w2cy(SRV_N));ctx.lineTo(cmx,w2cy(SRV_F));ctx.stroke();
+  // Center marks
+  ctx.beginPath();ctx.moveTo(cmx,w2cy(0));ctx.lineTo(cmx,w2cy(0.4));ctx.stroke();
+  ctx.beginPath();ctx.moveTo(cmx,w2cy(CL));ctx.lineTo(cmx,w2cy(CL-0.4));ctx.stroke();
 
   // ── Live ball trail ──
   if(liveBall && liveBall.x!=null && liveBall.y!=null){
@@ -1202,16 +1223,12 @@ function drawCourt(canvas,bounces,liveBall){
     ctx.beginPath();
     for(let i=0;i<_ballTrail.length;i++){
       const p=_ballTrail[i];
-      const px=tx(p.x),py=ty(p.y);
-      const alpha=0.15+(i/_ballTrail.length)*0.6;
-      if(i===0){ctx.moveTo(px,py)}
-      else{ctx.lineTo(px,py)}
+      if(i===0){ctx.moveTo(w2cx(p.x),w2cy(p.y))}
+      else{ctx.lineTo(w2cx(p.x),w2cy(p.y))}
     }
     ctx.strokeStyle='rgba(255,215,0,0.5)';ctx.lineWidth=2;ctx.stroke();
-    // Latest point: pulsing dot
     const last=_ballTrail[_ballTrail.length-1];
-    const lx=tx(last.x),ly=ty(last.y);
-    ctx.beginPath();ctx.arc(lx,ly,4,0,Math.PI*2);
+    ctx.beginPath();ctx.arc(w2cx(last.x),w2cy(last.y),4,0,Math.PI*2);
     ctx.fillStyle='#ffd700';ctx.fill();
     ctx.strokeStyle='#fff';ctx.lineWidth=1;ctx.stroke();
   }
@@ -1220,7 +1237,7 @@ function drawCourt(canvas,bounces,liveBall){
   if(bounces&&bounces.length){
     const last5 = bounces.slice(-5);
     last5.forEach((b,i)=>{
-      const bx=tx(b.x),by=ty(b.y);
+      const bx=w2cx(b.x),by=w2cy(b.y);
       const isIn = b.in_court;
       const color = isIn ? '#4caf50' : '#f44336';
       const age = last5.length - 1 - i;
@@ -1691,24 +1708,25 @@ function showRallyReplay(rally){
   if(!panel||!canvas) return;
 
   const ctx=canvas.getContext('2d'),W=canvas.width,H=canvas.height;
-  const margin=10,cw=W-2*margin,ch=H-2*margin;
-  const sx=cw/COURT_W,sy=ch/COURT_L;
-  // cam68 perspective: near baseline (y=0) at top, X mirrored
-  function tx(x){return margin+(COURT_W-x)*sx}
-  function ty(y){return margin+y*sy}
+  const margin=6,dw=W-2*margin,dh=H-2*margin;
+
+  // Same coordinate transform as drawCourt / offline renderer
+  function w2cx(wx){return margin+((wx-VIEW_X_MIN)/VIEW_W)*dw}
+  function w2cy(wy){return margin+(1.0-(wy-VIEW_Y_MIN)/VIEW_H)*dh}
 
   ctx.clearRect(0,0,W,H);
-  // Court
   ctx.fillStyle='#1a2e1a';ctx.fillRect(0,0,W,H);
-  ctx.fillStyle='#2d5a3d';ctx.fillRect(tx(COURT_W),ty(0),COURT_W*sx,COURT_L*sy);
-  ctx.fillStyle='#346845';ctx.fillRect(tx(COURT_W),ty(SRV_N),COURT_W*sx,(SRV_F-SRV_N)*sy);
+  const cl=w2cx(SX_MIN),ct=w2cy(CL),cr=w2cx(SX_MAX),cb=w2cy(0);
+  ctx.fillStyle='#2d5a3d';ctx.fillRect(cl,ct,cr-cl,cb-ct);
+  const st=w2cy(SRV_F),sb=w2cy(SRV_N);
+  ctx.fillStyle='#346845';ctx.fillRect(cl,st,cr-cl,sb-st);
   ctx.strokeStyle='#fff';ctx.lineWidth=1;
-  ctx.strokeRect(tx(COURT_W),ty(0),COURT_W*sx,COURT_L*sy);
-  ctx.beginPath();ctx.moveTo(tx(COURT_W),ty(NET_Y));ctx.lineTo(tx(0),ty(NET_Y));
+  ctx.strokeRect(cl,ct,cr-cl,cb-ct);
+  ctx.beginPath();ctx.moveTo(cl,w2cy(NET_Y));ctx.lineTo(cr,w2cy(NET_Y));
   ctx.strokeStyle='#ccc';ctx.lineWidth=2;ctx.stroke();
   ctx.strokeStyle='#fff';ctx.lineWidth=1;
-  [SRV_N,SRV_F].forEach(y=>{ctx.beginPath();ctx.moveTo(tx(COURT_W),ty(y));ctx.lineTo(tx(0),ty(y));ctx.stroke()});
-  ctx.beginPath();ctx.moveTo(tx(CX),ty(SRV_N));ctx.lineTo(tx(CX),ty(SRV_F));ctx.stroke();
+  [SRV_N,SRV_F].forEach(y=>{ctx.beginPath();ctx.moveTo(cl,w2cy(y));ctx.lineTo(cr,w2cy(y));ctx.stroke()});
+  ctx.beginPath();ctx.moveTo(w2cx(CX_LINE),w2cy(SRV_N));ctx.lineTo(w2cx(CX_LINE),w2cy(SRV_F));ctx.stroke();
 
   // Draw all bounces in this rally with connecting arrows
   const bounces=rally.bounces||[];
@@ -1717,14 +1735,14 @@ function showRallyReplay(rally){
     ctx.beginPath();
     ctx.strokeStyle='rgba(255,215,0,0.4)';ctx.lineWidth=1.5;ctx.setLineDash([4,3]);
     for(let i=0;i<bounces.length;i++){
-      const bx=tx(bounces[i].x),by=ty(bounces[i].y);
+      const bx=w2cx(bounces[i].x),by=w2cy(bounces[i].y);
       if(i===0) ctx.moveTo(bx,by); else ctx.lineTo(bx,by);
     }
     ctx.stroke();ctx.setLineDash([]);
 
     // Bounce markers
     bounces.forEach((b,i)=>{
-      const bx=tx(b.x),by=ty(b.y);
+      const bx=w2cx(b.x),by=w2cy(b.y);
       const isIn=b.in_court;
       const color=isIn?'#4caf50':'#f44336';
       const r=6;
