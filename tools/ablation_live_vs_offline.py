@@ -85,53 +85,80 @@ def run_offline(cfg, max_frames):
 # ══════════════════════════════════════════════════════════════════════════════
 
 def run_live(cfg, max_frames, offline_data=None):
-    """Simulate the live pipeline using offline detections to isolate Stage 2-4."""
+    """Simulate the live pipeline with INDEPENDENT detection (no court X filter)."""
+    import cv2
     from app.analytics import HybridBounceDetector
+    from app.pipeline.homography import HomographyTransformer
+    from app.pipeline.inference import create_detector
     from app.pipeline.multi_blob_matcher import MultiBlobMatcher
+    from app.pipeline.postprocess import BallTracker
     from app.triangulation import triangulate
 
-    logger.info("=== LIVE: Reusing OFFLINE Stage 1 detections ===")
-
-    # Reuse offline multi-blob detections directly
-    multi66 = offline_data["multi66"]
-    multi68 = offline_data["multi68"]
-    det66 = offline_data["det66"]
-    det68 = offline_data["det68"]
-
-    from app.pipeline.homography import HomographyTransformer
+    mcfg = cfg["model"]
     homo_path = cfg["homography"]["path"]
     homo66 = HomographyTransformer(homo_path, "cam66")
     homo68 = HomographyTransformer(homo_path, "cam68")
 
-    # Convert offline multi-blob format to live format with world coords
-    def make_live_dets(multi, homo):
-        out = {}
-        for fi in multi:
-            blobs = multi[fi]
-            if not blobs:
-                continue
-            # Add world coords to each blob (offline doesn't have them)
-            enriched = []
-            for b in blobs:
-                wx, wy = homo.pixel_to_world(b["pixel_x"], b["pixel_y"])
-                enriched.append({
-                    **b,
-                    "x": wx, "y": wy,
-                    "world_x": wx, "world_y": wy,
-                })
-            top = enriched[0]
-            out[fi] = {
-                "x": top["world_x"], "y": top["world_y"],
-                "pixel_x": top["pixel_x"], "pixel_y": top["pixel_y"],
-                "confidence": top["blob_sum"], "blob_sum": top["blob_sum"],
-                "timestamp": fi / 25.0,
-                "frame_index": fi,
-                "candidates": enriched,
-            }
-        return out
+    logger.info("=== LIVE Stage 1: Independent detection (no court X filter) ===")
 
-    live_det66 = make_live_dets(multi66, homo66)
-    live_det68 = make_live_dets(multi68, homo68)
+    def detect_single_cam(video_path, homo):
+        """Detect with top-K, NO court X filtering (matches offline)."""
+        detector = create_detector(
+            mcfg["path"], tuple(mcfg["input_size"]),
+            mcfg["frames_in"], mcfg.get("frames_out", mcfg["frames_in"]),
+            mcfg.get("device", "cuda"),
+        )
+        tracker = BallTracker(original_size=(1920, 1080), threshold=0.5)
+        cap = cv2.VideoCapture(video_path)
+        n_frames = min(int(cap.get(cv2.CAP_PROP_FRAME_COUNT)), max_frames)
+        detector.compute_video_median(cap, 0, n_frames)
+        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+
+        frames_buf = []
+        detections = {}
+        seq_len = mcfg["frames_in"]
+
+        for fi in range(n_frames):
+            ret, frame = cap.read()
+            if not ret:
+                break
+            frame[0:41, 0:603] = 0
+            frames_buf.append(frame)
+            if len(frames_buf) < seq_len:
+                continue
+
+            heatmaps = detector.infer(frames_buf)
+            for i in range(min(mcfg.get("frames_out", seq_len), len(heatmaps))):
+                blobs = tracker.process_heatmap_multi(heatmaps[i], max_blobs=2)
+                if not blobs:
+                    continue
+                top = blobs[0]
+                px, py, conf = top["pixel_x"], top["pixel_y"], top["blob_sum"]
+                wx, wy = homo.pixel_to_world(px, py)
+                out_fi = fi - len(frames_buf) + 1 + i
+                # NO court X filtering — matches offline
+                candidates = []
+                for b in blobs:
+                    bwx, bwy = homo.pixel_to_world(b["pixel_x"], b["pixel_y"])
+                    candidates.append({
+                        **b, "x": bwx, "y": bwy,
+                        "world_x": bwx, "world_y": bwy,
+                    })
+                detections[out_fi] = {
+                    "x": wx, "y": wy,
+                    "pixel_x": px, "pixel_y": py,
+                    "confidence": conf, "blob_sum": conf,
+                    "timestamp": out_fi / 25.0,
+                    "frame_index": out_fi,
+                    "candidates": candidates,
+                }
+            frames_buf.clear()
+
+        cap.release()
+        return detections
+
+    live_det66 = detect_single_cam(VIDEO_66, homo66)
+    live_det68 = detect_single_cam(VIDEO_68, homo68)
     logger.info("Live det66: %d frames, det68: %d frames", len(live_det66), len(live_det68))
 
     # ── Stage 2: Triangulation (live matcher, like orchestrator) ──
@@ -144,11 +171,17 @@ def run_live(cfg, max_frames, offline_data=None):
     pos1 = cam_positions[cam_names[0]]
     pos2 = cam_positions[cam_names[1]]
 
-    # Use the EXACT same offline triangulation function
-    from tools.render_tracking_video import triangulate_multi_blob as tri_offline
-    points_3d, _, stats = tri_offline(multi66, multi68, cfg)
+    # Use MultiBlobMatcher (same params as offline)
+    matcher = MultiBlobMatcher(pos1, pos2, valid_z_range=(0.0, 8.0))
+    points_3d = {}
+    common_frames = sorted(set(live_det66.keys()) & set(live_det68.keys()))
+    for fi in common_frames:
+        d1, d2 = live_det66[fi], live_det68[fi]
+        match = matcher.match(d1, d2)
+        if match is not None:
+            points_3d[fi] = (match["x"], match["y"], match["z"], match.get("ray_distance", 0))
 
-    logger.info("Live triangulation (using offline func): %d 3D points", len(points_3d))
+    logger.info("Live triangulation: %d 3D points from %d common frames", len(points_3d), len(common_frames))
 
     # ── Stage 3: SG Smoothing (like orchestrator._smooth_latest) ──
     logger.info("=== LIVE Stage 3: SG Smoothing ===")
@@ -165,9 +198,9 @@ def run_live(cfg, max_frames, offline_data=None):
         sx, sy, sz = smoothed[fi]
         pt = {"x": sx, "y": sy, "z": sz, "timestamp": fi / 25.0}
         cam_dets = {}
-        if fi in live_det66:
+        if fi in live_det66 and isinstance(live_det66[fi], dict):
             cam_dets[cam_names[0]] = live_det66[fi]
-        if fi in live_det68:
+        if fi in live_det68 and isinstance(live_det68[fi], dict):
             cam_dets[cam_names[1]] = live_det68[fi]
         b = hbd.update(pt, cam_dets)
         if b is not None:
@@ -177,8 +210,8 @@ def run_live(cfg, max_frames, offline_data=None):
             })
 
     return {
-        "det66": offline_data["det66"],  # same detections
-        "det68": offline_data["det68"],
+        "det66": {fi: (d["pixel_x"], d["pixel_y"], d["confidence"]) for fi, d in live_det66.items()},
+        "det68": {fi: (d["pixel_x"], d["pixel_y"], d["confidence"]) for fi, d in live_det68.items()},
         "points_3d": points_3d,
         "smoothed": smoothed,
         "bounces": bounces,

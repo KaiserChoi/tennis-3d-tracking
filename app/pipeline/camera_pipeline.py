@@ -148,8 +148,8 @@ def run_pipeline(
                 px, py, conf = top["pixel_x"], top["pixel_y"], top["blob_sum"]
                 wx, wy = homography.pixel_to_world(px, py)
 
-                if not (homography.court_x_min <= wx <= homography.court_x_max):
-                    continue
+                # NOTE: No court X filtering here — matches offline pipeline.
+                # MultiBlobMatcher in orchestrator handles court/Z bounds.
 
                 # Build candidates list with world coords for MultiBlobMatcher
                 candidates = []
