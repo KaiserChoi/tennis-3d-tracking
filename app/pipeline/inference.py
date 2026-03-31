@@ -1,11 +1,12 @@
 """Ball detection inference with GPU/CPU fallback.
 
-Supports two model backends:
+Supports three detector backends:
     - BallDetector:      ONNX-based HRNet (frames_in=3, frames_out=3)
     - TrackNetDetector:  PyTorch-based TrackNet (seq_len=8, bg_mode='concat')
+    - MedianBGDetector:  Median background subtraction (frames_in=30, no GPU)
 
-Use ``create_detector()`` factory to auto-select backend based on model file
-extension (.onnx → BallDetector, .pt → TrackNetDetector).
+Use ``create_detector()`` factory to select backend.  Default auto-selects by
+model file extension; pass ``detector_type="median_bg"`` to use MedianBGDetector.
 """
 
 import logging
@@ -299,6 +300,57 @@ class TrackNetDetector:
 
 
 # ---------------------------------------------------------------------------
+# Median background subtraction detector (no GPU required)
+# ---------------------------------------------------------------------------
+
+class MedianBGDetector:
+    """Median background subtraction ball detector (30 frames per block).
+
+    Returns ALL raw pixel (cx, cy) blobs per frame — no filtering, no limit.
+    Downstream tracker (track_single_camera) handles blob linking and filtering.
+
+    Recall ~94% with thresh=10, ~67-89 candidates per frame.
+    """
+
+    # Flag: camera_pipeline sends raw blob_block instead of per-frame detections.
+    returns_blobs = True
+
+    def __init__(
+        self,
+        input_size: tuple[int, int] = (288, 512),
+        frames_in: int = 30,
+        frames_out: int = 30,
+        device: str = "cuda",
+        thresh: int = 10,
+        min_area: int = 2,
+        max_area: int = 600,
+        **_kwargs,
+    ):
+        from app.pipeline.blob_detector import BallBlobDetector
+
+        self.input_h, self.input_w = input_size
+        self.frames_in = frames_in
+        self.frames_out = frames_in
+        self._detector = BallBlobDetector(
+            thresh=thresh, min_area=min_area, max_area=max_area,
+        )
+        logger.info(
+            "MedianBGDetector ready (thresh=%d, area=%d-%d, block=%d)",
+            thresh, min_area, max_area, frames_in,
+        )
+
+    def infer(self, frames: list[np.ndarray]) -> dict[int, list[tuple]]:
+        """Run median-BG blob detection on a block of BGR frames.
+
+        Returns:
+            Dict mapping frame index (0-based in block) to list of (cx, cy).
+            ALL blobs returned — no limit, no ranking.
+        """
+        gray_frames = [cv2.cvtColor(f, cv2.COLOR_BGR2GRAY) for f in frames]
+        return self._detector.detect_block(gray_frames)
+
+
+# ---------------------------------------------------------------------------
 # Factory function
 # ---------------------------------------------------------------------------
 
@@ -308,12 +360,23 @@ def create_detector(
     frames_in: int = 3,
     frames_out: int = 3,
     device: str = "cuda",
-) -> BallDetector | TrackNetDetector:
-    """Auto-select detector backend based on model file extension.
+    detector_type: str = "auto",
+) -> "BallDetector | TrackNetDetector | MedianBGDetector":
+    """Select detector backend.
 
-    - ``.onnx`` → BallDetector (ONNX Runtime)
-    - ``.pt``   → TrackNetDetector (PyTorch native)
+    Args:
+        detector_type: ``"auto"`` (default) selects by file extension,
+            ``"median_bg"`` uses MedianBGDetector (no model file needed).
     """
+    if detector_type == "median_bg":
+        logger.info("Using MedianBGDetector (median background subtraction)")
+        return MedianBGDetector(
+            input_size=input_size,
+            frames_in=frames_in,
+            frames_out=frames_in,
+            device=device,
+        )
+    # Auto-select by file extension
     if model_path.endswith(".pt"):
         logger.info("Auto-detected PyTorch model → TrackNetDetector")
         return TrackNetDetector(
