@@ -113,14 +113,12 @@ def triangulate(w1, w2):
 
 
 def v2_to_ws(x, y):
-    """V2 world coords → WebSocket normalized [0,1].
+    """V2 world coords → WebSocket values (×10).
 
     V2: x in [-4.115, +4.115], y in [-11.89, +11.89], net at y=0
-    WS: x in [0, 1], y in [0, 1]
+    WS: x in [-41.15, 41.15], y in [-118.9, 118.9]
     """
-    ws_x = (x + HW) / (2 * HW)      # -HW→0, +HW→1
-    ws_y = 1.0 - (y + HL) / (2 * HL) # +HL→0 (far), -HL→1 (near)
-    return round(ws_x, 4), round(ws_y, 4)
+    return round(x * 10, 4), round(y * 10, 4)
 
 
 # ================================================================
@@ -191,7 +189,6 @@ async def push_bounces(bounces):
             for b in bounces:
                 wx, wy = v2_to_ws(b["x"], b["y"])
                 msg = json.dumps({
-                    "room": "general",
                     "msg": {
                         "message": "bounce_data",
                         "data": {

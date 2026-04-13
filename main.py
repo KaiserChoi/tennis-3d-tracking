@@ -47,6 +47,11 @@ def create_app() -> FastAPI:
     uploads_dir.mkdir(exist_ok=True)
     app.mount("/uploads", StaticFiles(directory=str(uploads_dir)), name="uploads")
 
+    # Serve generated reports
+    reports_dir = Path("reports")
+    reports_dir.mkdir(exist_ok=True)
+    app.mount("/reports", StaticFiles(directory=str(reports_dir), html=True), name="reports")
+
     @app.on_event("shutdown")
     def on_shutdown():
         logger.info("Shutting down orchestrator...")

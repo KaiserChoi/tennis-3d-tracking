@@ -366,7 +366,7 @@ body{font-family:'Lato',sans-serif;background:var(--bg);color:var(--text);height
         <svg viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0016 9.5 6.5 6.5 0 109.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
         <span>Search Plate</span>
       </div>
-      <div class="nav-item" data-page="reports">
+      <div class="nav-item" data-page="reports" onclick="switchPage('reports');loadReports()">
         <svg viewBox="0 0 24 24"><path d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zM9 17H7v-7h2v7zm4 0h-2V7h2v10zm4 0h-2v-4h2v4z"/></svg>
         <span>Reports</span>
       </div>
@@ -928,6 +928,38 @@ body{font-family:'Lato',sans-serif;background:var(--bg);color:var(--text);height
       </div>
     </div><!-- /page-video-test -->
 
+    <!-- ==================== Reports Page ==================== -->
+    <div id="page-reports" class="page-content">
+      <div class="main-header"><h1>Match Reports</h1></div>
+      <div style="padding:20px;max-width:900px;margin:0 auto">
+        <div style="display:flex;gap:12px;margin-bottom:20px">
+          <button onclick="generateReport()" style="padding:8px 20px;background:#4caf50;color:#fff;border:none;border-radius:6px;cursor:pointer;font-weight:600">Generate Now</button>
+          <button onclick="loadReports()" style="padding:8px 20px;background:rgba(255,255,255,0.1);color:#ccc;border:1px solid rgba(255,255,255,0.2);border-radius:6px;cursor:pointer">Refresh</button>
+          <span style="color:#8892b0;font-size:12px;margin-left:12px">Auto every</span>
+          <select id="report-interval" onchange="setReportInterval(this.value)" style="padding:4px 8px;background:#1a1f3a;color:#ccc;border:1px solid rgba(255,255,255,0.2);border-radius:4px;font-size:12px">
+            <option value="0">Off</option>
+            <option value="10" selected>10 rallies</option>
+            <option value="20">20 rallies</option>
+            <option value="60">60 rallies</option>
+            <option value="100">100 rallies</option>
+          </select>
+        </div>
+        <div id="reports-status" style="color:#8892b0;font-size:12px;margin-bottom:12px"></div>
+        <table id="reports-table" style="width:100%;border-collapse:collapse;font-size:13px">
+          <thead><tr style="border-bottom:1px solid rgba(255,255,255,0.1);text-align:left">
+            <th style="padding:10px;color:#8892b0">Report</th>
+            <th style="padding:10px;color:#8892b0">Rallies</th>
+            <th style="padding:10px;color:#8892b0">Bounces</th>
+            <th style="padding:10px;color:#8892b0">IN/OUT</th>
+            <th style="padding:10px;color:#8892b0">Avg Speed</th>
+            <th style="padding:10px;color:#8892b0">Max Speed</th>
+          </tr></thead>
+          <tbody id="reports-tbody"></tbody>
+        </table>
+        <div id="report-detail" style="display:none;margin-top:20px;padding:20px;background:rgba(255,255,255,0.03);border-radius:8px"></div>
+      </div>
+    </div>
+
     <!-- ==================== Calibration Page ==================== -->
     <div id="page-calibration" class="page-content">
       <div class="main-header"><h1>Camera Calibration</h1></div>
@@ -1100,7 +1132,7 @@ function _renderGrid(cams){
 // ---- Video Stream Delay ----
 // Server-side delay via ?delay=N parameter on MJPEG stream URL.
 // Matches pipeline latency so bounce events appear in sync with video.
-const _VIDEO_DELAY_S = 3;
+const _VIDEO_DELAY_S = 1;
 
 // ---- Ball Overlay on Camera Feed ----
 // Draws tracked ball position on the MJPEG stream overlay canvas.
@@ -5351,6 +5383,150 @@ switchPage=function(page){
     setTimeout(calInit,100);
   }
 };
+
+// ---- Reports Page ----
+async function loadReports(){
+  const tbody=document.getElementById('reports-tbody');
+  if(!tbody)return;
+  tbody.innerHTML='<tr><td colspan="6" style="padding:20px;color:#666">Loading...</td></tr>';
+  try{
+    const r=await fetch('/api/report/list');
+    const d=await r.json();
+    const reports=d.reports||[];
+    if(!reports.length){
+      tbody.innerHTML='<tr><td colspan="6" style="padding:20px;color:#666">No reports yet. Click "Generate Report" to create one from a recording.</td></tr>';
+      return;
+    }
+    tbody.innerHTML=reports.map(rp=>{
+      const s=rp.summary||{};
+      return `<tr style="border-bottom:1px solid rgba(255,255,255,0.04);cursor:pointer" onclick="viewReport('${rp.name}')">
+        <td style="padding:10px;font-weight:600;color:#69f0ae">${rp.name}</td>
+        <td style="padding:10px">${s.rally_count||'-'}</td>
+        <td style="padding:10px">${s.total_bounces||'-'}</td>
+        <td style="padding:10px">${s.bounces_in||0} / ${s.bounces_out||0}</td>
+        <td style="padding:10px">${s.avg_speed_kmh||'-'} km/h</td>
+        <td style="padding:10px">${s.max_speed_kmh||'-'} km/h</td>
+      </tr>`;
+    }).join('');
+  }catch(e){
+    tbody.innerHTML='<tr><td colspan="6" style="padding:20px;color:#f44336">Error: '+e.message+'</td></tr>';
+  }
+}
+
+async function setReportInterval(val){
+  try{
+    await fetch('/api/report/interval',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({interval:parseInt(val)})});
+  }catch(e){console.error(e)}
+}
+
+async function generateReport(){
+  const statusEl=document.getElementById('reports-status');
+  statusEl.textContent='Generating report...';
+  statusEl.style.color='#ffeb3b';
+  try{
+    const r=await fetch('/api/report/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+    const d=await r.json();
+    if(d.error){
+      statusEl.textContent='Error: '+d.error;
+      statusEl.style.color='#f44336';
+    }else{
+      statusEl.textContent='Report generated: '+d.report_name;
+      statusEl.style.color='#4caf50';
+      loadReports();
+    }
+  }catch(e){
+    statusEl.textContent='Failed: '+e.message;
+    statusEl.style.color='#f44336';
+  }
+}
+
+function viewReport(name){
+  window.open('/reports/'+name+'/dashboard.html','_blank');
+}
+
+async function viewReportInline(name){
+  const detail=document.getElementById('report-detail');
+  detail.style.display='block';
+  detail.innerHTML='Loading...';
+  try{
+    const r=await fetch('/api/report/'+name+'/data');
+    const d=await r.json();
+    const s=d.summary||{};
+    const bounces=d.bounces||[];
+    const rallies=d.rallies||[];
+    detail.innerHTML=`
+      <h3 style="color:#69f0ae;margin-bottom:12px">${d.session_name}</h3>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px">
+        <div style="background:rgba(255,255,255,0.05);padding:12px;border-radius:6px;text-align:center">
+          <div style="font-size:24px;font-weight:700;color:#fff">${s.rally_count}</div>
+          <div style="font-size:11px;color:#8892b0">Rallies</div>
+        </div>
+        <div style="background:rgba(255,255,255,0.05);padding:12px;border-radius:6px;text-align:center">
+          <div style="font-size:24px;font-weight:700;color:#fff">${s.total_shots||0}</div>
+          <div style="font-size:11px;color:#8892b0">Total Shots</div>
+        </div>
+        <div style="background:rgba(255,255,255,0.05);padding:12px;border-radius:6px;text-align:center">
+          <div style="font-size:24px;font-weight:700;color:#4caf50">${s.bounces_in}</div>
+          <div style="font-size:11px;color:#8892b0">Bounces IN</div>
+        </div>
+        <div style="background:rgba(255,255,255,0.05);padding:12px;border-radius:6px;text-align:center">
+          <div style="font-size:24px;font-weight:700;color:#f44336">${s.bounces_out}</div>
+          <div style="font-size:11px;color:#8892b0">Bounces OUT</div>
+        </div>
+      </div>
+      ${s.near_side ? `
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px">
+        <div style="background:rgba(79,195,247,0.08);padding:14px;border-radius:6px;border:1px solid rgba(79,195,247,0.2)">
+          <div style="font-size:12px;font-weight:700;color:#4fc3f7;margin-bottom:8px">⬇ ${s.near_side.label}</div>
+          <div style="display:flex;gap:16px">
+            <div><span style="font-size:20px;font-weight:700;color:#fff">${s.near_side.total}</span> <span style="font-size:11px;color:#8892b0">bounces</span></div>
+            <div><span style="color:#4caf50;font-weight:600">${s.near_side.in} IN</span> / <span style="color:#f44336;font-weight:600">${s.near_side.out} OUT</span></div>
+          </div>
+        </div>
+        <div style="background:rgba(255,152,0,0.08);padding:14px;border-radius:6px;border:1px solid rgba(255,152,0,0.2)">
+          <div style="font-size:12px;font-weight:700;color:#ff9800;margin-bottom:8px">⬆ ${s.far_side.label}</div>
+          <div style="display:flex;gap:16px">
+            <div><span style="font-size:20px;font-weight:700;color:#fff">${s.far_side.total}</span> <span style="font-size:11px;color:#8892b0">bounces</span></div>
+            <div><span style="color:#4caf50;font-weight:600">${s.far_side.in} IN</span> / <span style="color:#f44336;font-weight:600">${s.far_side.out} OUT</span></div>
+          </div>
+        </div>
+      </div>` : ''}
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px">
+        <div style="background:rgba(255,255,255,0.05);padding:12px;border-radius:6px;text-align:center">
+          <div style="font-size:20px;font-weight:700;color:#ffeb3b">${s.avg_speed_kmh}</div>
+          <div style="font-size:11px;color:#8892b0">Avg Speed (km/h)</div>
+        </div>
+        <div style="background:rgba(255,255,255,0.05);padding:12px;border-radius:6px;text-align:center">
+          <div style="font-size:20px;font-weight:700;color:#ff9800">${s.max_speed_kmh}</div>
+          <div style="font-size:11px;color:#8892b0">Max Speed (km/h)</div>
+        </div>
+        <div style="background:rgba(255,255,255,0.05);padding:12px;border-radius:6px;text-align:center">
+          <div style="font-size:20px;font-weight:700;color:#fff">${Math.round(s.total_duration_s/60)}m ${Math.round(s.total_duration_s%60)}s</div>
+          <div style="font-size:11px;color:#8892b0">Duration</div>
+        </div>
+      </div>
+      <h4 style="color:#ccc;margin:16px 0 8px">Rally Details</h4>
+      <table style="width:100%;border-collapse:collapse;font-size:12px">
+        <thead><tr style="border-bottom:1px solid rgba(255,255,255,0.1)">
+          <th style="padding:6px;text-align:left;color:#8892b0">#</th>
+          <th style="padding:6px;color:#8892b0">Duration</th>
+          <th style="padding:6px;color:#8892b0">Shots</th>
+          <th style="padding:6px;color:#8892b0">Avg Speed</th>
+          <th style="padding:6px;color:#8892b0">Max Speed</th>
+        </tr></thead>
+        <tbody>${rallies.map((r,i)=>`<tr style="border-bottom:1px solid rgba(255,255,255,0.03)">
+          <td style="padding:6px">${i+1}</td>
+          <td style="padding:6px">${r.duration?.toFixed(1)||'-'}s</td>
+          <td style="padding:6px">${r.shots||'-'}</td>
+          <td style="padding:6px">${r.speed_avg||'-'} km/h</td>
+          <td style="padding:6px">${r.speed_max||'-'} km/h</td>
+        </tr>`).join('')}</tbody>
+      </table>
+    `;
+  }catch(e){
+    detail.innerHTML='<div style="color:#f44336">Error: '+e.message+'</div>';
+  }
+}
 </script>
 </body>
 </html>

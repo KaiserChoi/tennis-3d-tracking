@@ -234,6 +234,101 @@ async def run_calibration_api():
         raise HTTPException(500, str(e))
 
 
+# ---- Reports ----
+
+@router.post("/api/report/generate")
+async def generate_report_api(request: Request):
+    """Generate match analysis report from JSONL tracking data.
+
+    Body: {"session": "tracking_20260404_093901"} or {} for latest.
+    Works even while recording — flushes data file first.
+    """
+    from app.report import generate_report
+    orch = _get_orch()
+
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+
+    # Flush current recording data so we can read it
+    orch.flush_data_file()
+
+    session = body.get("session")
+    recordings_dir = Path("recordings")
+
+    if session:
+        jsonl_path = recordings_dir / f"{session}.jsonl"
+        if not jsonl_path.exists():
+            jsonl_path = recordings_dir / session
+        if not jsonl_path.exists():
+            raise HTTPException(404, f"JSONL not found: {session}")
+    else:
+        # Try current recording first, then most recent file
+        current = orch.get_current_jsonl_path()
+        if current and Path(current).exists():
+            jsonl_path = Path(current)
+        else:
+            jsonls = sorted(recordings_dir.glob("tracking_*.jsonl"), reverse=True)
+            if not jsonls:
+                raise HTTPException(404, "No tracking JSONL files found in recordings/")
+            jsonl_path = jsonls[0]
+
+    try:
+        result = generate_report(str(jsonl_path))
+        return result
+    except Exception as e:
+        raise HTTPException(500, f"Report generation failed: {e}")
+
+
+@router.post("/api/report/interval")
+async def set_report_interval(request: Request):
+    """Set rally-based auto report interval.
+
+    Body: {"interval": 10}  — generate report every 10 rallies. 0 = disabled.
+    """
+    orch = _get_orch()
+    body = await request.json()
+    interval = body.get("interval", 10)
+    return orch.set_rally_report_interval(interval)
+
+
+@router.get("/api/report/list")
+async def list_reports():
+    """List generated reports."""
+    reports_dir = Path("reports")
+    if not reports_dir.exists():
+        return {"reports": []}
+
+    reports = []
+    for d in sorted(reports_dir.iterdir(), reverse=True):
+        if not d.is_dir():
+            continue
+        viz_path = d / "viz_data.json"
+        summary = {}
+        if viz_path.exists():
+            try:
+                with open(viz_path) as f:
+                    data = json.load(f)
+                summary = data.get("summary", {})
+            except Exception:
+                pass
+        reports.append({"name": d.name, "summary": summary})
+
+    return {"reports": reports}
+
+
+@router.get("/api/report/{name}/data")
+async def get_report_data(name: str):
+    """Get report viz_data.json."""
+    path = Path("reports") / name / "viz_data.json"
+    if not path.exists():
+        raise HTTPException(404, f"Report not found: {name}")
+    with open(path) as f:
+        return json.load(f)
+
+
 # ---- Debug output ----
 
 @router.post("/api/debug/save")

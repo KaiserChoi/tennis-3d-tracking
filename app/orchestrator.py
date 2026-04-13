@@ -80,9 +80,12 @@ class Orchestrator:
         self._recording_lock = threading.Lock()
         self._recordings_dir = Path("recordings")
 
-        # Tracking data recording (JSONL alongside video)
-        self._data_file: Any = None
+        # Tracking JSONL (always writes when pipeline runs, independent of recording)
+        self._tracking_file: Any = None
+        self._tracking_file_path: str | None = None
         self._data_frame_counter: int = 0
+        # Legacy alias for recording-specific data file
+        self._data_file: Any = None
 
         # Video test
         self._video_test_handle: Optional[_PipelineHandle] = None
@@ -100,6 +103,11 @@ class Orchestrator:
         self._enhanced_bounce = EnhancedBounceDetector()
         self._hybrid_bounce = HybridBounceDetector()
         self._rally_sm = RallyStateMachine()
+
+        # Auto report: generate after every N completed rallies
+        self._rally_report_interval: int = 10  # 0 = disabled
+        self._rally_completed_count: int = 0
+        self._last_report_rally_count: int = 0
 
         # MedianBG tracking state (track-first-triangulate-later pipeline)
         self._is_median_bg = self.config.model.detector_type == "median_bg"
@@ -271,6 +279,20 @@ class Orchestrator:
     def _consume_loop(self) -> None:
         logger.info("Consumer thread started")
         self._triangulation_active = True
+
+        # Always write tracking JSONL (independent of recording)
+        if self._tracking_file is None:
+            import datetime as _dt
+            ts = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+            self._recordings_dir.mkdir(parents=True, exist_ok=True)
+            tracking_path = str(self._recordings_dir / f"tracking_{ts}.jsonl")
+            try:
+                self._tracking_file = open(tracking_path, "w", encoding="utf-8")
+                self._tracking_file_path = tracking_path
+                self._data_frame_counter = 0
+                logger.info("Tracking JSONL started: %s", tracking_path)
+            except Exception as e:
+                logger.warning("Failed to open tracking file: %s", e)
 
         # Only cameras with position_3d can do triangulation
         cam_positions = self._get_camera_positions()
@@ -498,17 +520,26 @@ class Orchestrator:
                             pending_bounces = [bounce] if bounce is not None else []
                         for pb in pending_bounces:
                             bd = pb.to_dict()
-                            if self._latest_net_crossing and (now - self._latest_net_crossing["timestamp"]) < 3.0:
-                                bd["speed_kmh"] = self._latest_net_crossing["speed_kmh"]
-                                bd["speed_direction"] = self._latest_net_crossing["direction"]
+                            # Match bounce to the most recent UNUSED net crossing within 3s
+                            matched_speed = 0
+                            if self._net_crossings:
+                                for nc in reversed(self._net_crossings):
+                                    if nc.get("_used"):
+                                        continue
+                                    if now - nc["timestamp"] < 3.0:
+                                        bd["speed_kmh"] = nc["speed_kmh"]
+                                        bd["speed_direction"] = nc["direction"]
+                                        matched_speed = nc["speed_kmh"]
+                                        nc["_used"] = True  # consume this crossing
+                                        break
                             self._live_bounces.append(bd)
                             self._debug_record_bounce(pb)
-                            if self._ws_enabled:
+                            if self._ws_enabled and matched_speed > 0:
                                 bx, by = pb.x, pb.y
                                 self._ws_bounce_queue.append({
-                                    "x": (bx + 4.115) / 8.23,
-                                    "y": 1.0 - (by + 11.89) / 23.78,
-                                    "speed": self._latest_net_crossing["speed_kmh"] if self._latest_net_crossing else 0,
+                                    "x": round(bx * 10, 4),
+                                    "y": round(by * 10, 4),
+                                    "speed": matched_speed,
                                     "timestamp": int(now * 1000),
                                 })
                         if len(self._live_bounces) > 50:
@@ -533,9 +564,15 @@ class Orchestrator:
                             self._live_rallies.append(rally_result.to_dict())
                             if len(self._live_rallies) > 20:
                                 self._live_rallies = self._live_rallies[-20:]
+                            # Auto report on rally interval
+                            self._rally_completed_count += 1
+                            if (self._rally_report_interval > 0
+                                    and self._rally_completed_count - self._last_report_rally_count
+                                    >= self._rally_report_interval):
+                                self._auto_generate_report()
 
-                    # Write per-frame tracking data (JSONL)
-                    if self._recording and self._data_file is not None:
+                    # Write per-frame tracking data (JSONL — always, not just during recording)
+                    if self._tracking_file is not None:
                         self._write_tracking_frame(
                             d1, d2, tri_cams, x, y, z,
                             _tri_smoothed, _tri_bounce, now, capture_ts,
@@ -547,6 +584,15 @@ class Orchestrator:
                 time.sleep(0.001)  # 1ms — fast response to new detections
 
         self._triangulation_active = False
+        # Close tracking JSONL
+        if self._tracking_file is not None:
+            try:
+                self._tracking_file.close()
+            except Exception:
+                pass
+            logger.info("Tracking JSONL closed: %s (%d frames)",
+                        self._tracking_file_path, self._data_frame_counter)
+            self._tracking_file = None
         logger.info("Consumer thread stopped")
 
     # ------------------------------------------------------------------
@@ -632,6 +678,41 @@ class Orchestrator:
             result = {"status": "stopped", "files": files, "duration_s": round(elapsed, 1)}
             self._recording_info = {}
             return result
+
+    def set_rally_report_interval(self, interval: int) -> dict:
+        """Set how many rallies trigger an auto report. 0 = disabled."""
+        self._rally_report_interval = max(0, interval)
+        return {"interval": self._rally_report_interval}
+
+    def _auto_generate_report(self):
+        """Auto-generate report from current tracking JSONL."""
+        self._last_report_rally_count = self._rally_completed_count
+        self.flush_data_file()
+        path = self.get_current_jsonl_path()
+        if not path:
+            return
+        try:
+            from app.report import generate_report
+            result = generate_report(path)
+            logger.info("Auto report generated: %s (%d rallies)",
+                        result.get("report_name"), self._rally_completed_count)
+        except Exception as e:
+            logger.warning("Auto report failed: %s", e)
+
+    def flush_data_file(self) -> None:
+        """Flush the JSONL tracking data file so report module can read it."""
+        if self._tracking_file is not None:
+            try:
+                self._tracking_file.flush()
+            except Exception:
+                pass
+
+    def get_current_jsonl_path(self) -> str | None:
+        """Return path to the current tracking JSONL, or most recent."""
+        if self._tracking_file_path:
+            return self._tracking_file_path
+        jsonls = sorted(Path("recordings").glob("tracking_*.jsonl"), reverse=True)
+        return str(jsonls[0]) if jsonls else None
 
     def get_recording_status(self) -> dict:
         if not self._recording:
@@ -826,7 +907,8 @@ class Orchestrator:
         row["state"] = state
 
         try:
-            self._data_file.write(json.dumps(row, ensure_ascii=False) + "\n")
+            self._tracking_file.write(json.dumps(row, ensure_ascii=False) + "\n")
+            self._tracking_file.flush()
             self._data_frame_counter += 1
         except Exception:
             pass
@@ -1102,14 +1184,7 @@ class Orchestrator:
                 self._emitted_bounce_frames.add(b["frame"])
                 self._live_bounces.append(b)
                 self._debug_record_bounce(b)
-                # Push to 3D display (V2 → normalized [0,1])
-                if self._ws_enabled:
-                    self._ws_bounce_queue.append({
-                        "x": (b["x"] + 4.115) / 8.23,
-                        "y": 1.0 - (b["y"] + 11.89) / 23.78,
-                        "speed": 0,
-                        "timestamp": int(now * 1000),
-                    })
+                # No 3D push for median_bg bounces (speed=0)
                 logger.info(
                     "Bounce: frame=%d z=%.3f (%.2f, %.2f) %s",
                     b["frame"], b["z"], b["x"], b["y"],
@@ -1324,7 +1399,6 @@ class Orchestrator:
                             if self._ws_bounce_queue:
                                 bd = self._ws_bounce_queue.pop(0)
                                 msg = json.dumps({
-                                    "room": "general",
                                     "msg": {
                                         "message": "bounce_data",
                                         "data": {
