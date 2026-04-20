@@ -548,8 +548,15 @@ class Orchestrator:
                                 speed_kmh = float(np.median(list(self._speed_buffer)))
                                 if self._SPEED_MIN <= speed_kmh <= self._SPEED_MAX:
                                     direction = "near_to_far" if curr_y > prev_y else "far_to_near"
+                                    # Speed surfaced externally is always an
+                                    # integer km/h — dashboard / WS / report
+                                    # never need 0.1 precision and float noise
+                                    # across the net-crossing → bounce → WS
+                                    # pipeline caused 'fractional' values to
+                                    # leak into reports.
+                                    speed_kmh_int = int(round(speed_kmh))
                                     crossing = {
-                                        "speed_kmh": round(speed_kmh, 1),
+                                        "speed_kmh": speed_kmh_int,
                                         "direction": direction,
                                         "timestamp": now,
                                         "x": x, "y": y, "z": z,
@@ -557,7 +564,7 @@ class Orchestrator:
                                     self._latest_net_crossing = crossing
                                     self._net_crossings.append(crossing)
                                     self._debug_data.setdefault("net_crossings", []).append({
-                                        "frame": fi, "speed_kmh": round(speed_kmh, 1),
+                                        "frame": fi, "speed_kmh": speed_kmh_int,
                                         "direction": direction, "x": round(x, 3), "y": round(y, 3), "z": round(z, 3),
                                     })
                                     if len(self._net_crossings) > 100:
@@ -568,7 +575,10 @@ class Orchestrator:
                     # samples so a single noisy detection doesn't spike the value
                     # surfaced to the dashboard / rally_raw_buffer.
                     if self._speed_buffer:
-                        self._last_frame_speed_kmh = float(np.median(list(self._speed_buffer)))
+                        # Surface as integer km/h for consistency with bounces.
+                        self._last_frame_speed_kmh = float(
+                            int(round(float(np.median(list(self._speed_buffer)))))
+                        )
 
 
                     # cam_dets feeds HybridBounceDetector's landing-coord selector.
@@ -1911,7 +1921,7 @@ class Orchestrator:
                                                 "timeStamp": bd["timestamp"],
                                                 "x": round(bd["x"], 4),
                                                 "y": round(bd["y"], 4),
-                                                "speed": round(bd["speed"], 1),
+                                                "speed": int(round(bd["speed"])),
                                             }
                                         }
                                     }
