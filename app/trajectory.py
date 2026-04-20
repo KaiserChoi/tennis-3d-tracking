@@ -83,7 +83,7 @@ def clean_detections(
 
     # Step 2: Court bounds filter (world-space)
     x_min, x_max = _COURT_X_MIN - court_margin, _COURT_X_MAX + court_margin
-    y_min, y_max = -court_margin, _COURT_Y + court_margin
+    y_min, y_max = -_COURT_Y - court_margin, _COURT_Y + court_margin
     bounded = []
     for d in filtered:
         wx, wy = _pixel_to_world(H_i2w, d[1], d[2])
@@ -741,7 +741,7 @@ def _segment_strokes(
             y2 = (-bz - sqrt_disc) / (2 * az) if abs(az) > 1e-9 else None
             candidates = [
                 y for y in [y1, y2]
-                if y is not None and -2 <= y <= _COURT_Y + 2
+                if y is not None and -_COURT_Y - 2 <= y <= _COURT_Y + 2
             ]
             if candidates:
                 # Pick root farthest from segment start
@@ -940,7 +940,7 @@ def _generate_smooth_curve(
 
 
 def _check_net_crossing(points: list[dict], traj_result: dict) -> Optional[dict]:
-    """Check ball height and speed at net position (Y=11.885m).
+    """Check ball height and speed at net position (V2: y=0).
 
     Computes:
         - Position (x, z) at the net
@@ -1064,10 +1064,10 @@ def _find_landing_point(traj_result: dict) -> Optional[dict]:
         y2 = (-bz - sqrt_disc) / (2 * az)
         # Pick the root that's farther along the trajectory (away from bounce)
         bounce_y = traj_result["bounce_pos"]["y"]
-        candidates = [y for y in [y1, y2] if 0 <= y <= _COURT_Y]
+        candidates = [y for y in [y1, y2] if -_COURT_Y <= y <= _COURT_Y]
         if not candidates:
             # Try with some margin
-            candidates = [y for y in [y1, y2] if -2 <= y <= _COURT_Y + 2]
+            candidates = [y for y in [y1, y2] if -_COURT_Y - 2 <= y <= _COURT_Y + 2]
         if not candidates:
             return None
         # Pick the one farther from the bounce point
@@ -1089,7 +1089,7 @@ def _find_landing_point(traj_result: dict) -> Optional[dict]:
         sqrt_disc = np.sqrt(disc)
         y1 = (-bz + sqrt_disc) / (2 * az)
         y2 = (-bz - sqrt_disc) / (2 * az)
-        candidates = [y for y in [y1, y2] if 0 <= y <= _COURT_Y]
+        candidates = [y for y in [y1, y2] if -_COURT_Y <= y <= _COURT_Y]
         if not candidates:
             return None
         # Pick the root on the descending side (farther from start)

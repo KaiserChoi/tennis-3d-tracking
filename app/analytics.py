@@ -24,27 +24,28 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-# Court dimensions (meters)
-DOUBLES_WIDTH = 8.23
-COURT_Y = 23.77
-NET_Y = 11.885
+# Court dimensions (meters) — V2 coord system: origin at court center, net at y=0
+# ITF singles court (project uses singles only — see memory/calibration_issue.md)
+SINGLES_WIDTH = 8.23
+COURT_Y = 23.77                       # court length
+NET_Y = 0.0
 NET_HEIGHT = 0.914
 
-# Singles court boundaries (labeled keypoints are on singles lines)
-SINGLES_X_MIN = 1.37
-SINGLES_X_MAX = 6.86
+# Singles court boundaries (V2: centered)
+SINGLES_X_MIN = -SINGLES_WIDTH / 2    # -4.115
+SINGLES_X_MAX =  SINGLES_WIDTH / 2    # +4.115
 COURT_X_MIN = SINGLES_X_MIN
 COURT_X_MAX = SINGLES_X_MAX
-COURT_Y_MIN = 0.0
-COURT_Y_MAX = COURT_Y
+COURT_Y_MIN = -COURT_Y / 2            # -11.885
+COURT_Y_MAX =  COURT_Y / 2            # +11.885
 
-# Service box boundaries
-SERVICE_LINE_NEAR = 5.485
-SERVICE_LINE_FAR = 18.285
+# Service box boundaries (V2: symmetric around net at y=0)
+SERVICE_LINE_NEAR = -6.40
+SERVICE_LINE_FAR  =  6.40
 
-# Baseline zones for serve detection
-BASELINE_NEAR_MAX = 5.0   # y < 5m = near baseline zone
-BASELINE_FAR_MIN = 18.77  # y > 18.77m = far baseline zone
+# Baseline zones for serve detection (V2: within 5m of each baseline)
+BASELINE_NEAR_MAX = COURT_Y_MIN + 5.0  # -6.885: y < this = near baseline zone
+BASELINE_FAR_MIN  = COURT_Y_MAX - 5.0  # +6.885: y > this = far baseline zone
 
 
 # ---------------------------------------------------------------------------
@@ -165,7 +166,7 @@ COURT_MARGIN = 0.15  # tolerance for calibration error (meters)
 def _is_in_court(x: float, y: float, margin: float = COURT_MARGIN) -> bool:
     """Check if (x, y) falls within court boundaries (V2 coords)."""
     # V2: origin at court center, x in [-4.115, +4.115], y in [-11.885, +11.885]
-    HW = DOUBLES_WIDTH / 2  # 4.115
+    HW = SINGLES_WIDTH / 2  # 4.115
     HL = COURT_Y / 2  # 11.885
     return abs(x) <= HW + margin and abs(y) <= HL + margin
 
@@ -902,7 +903,7 @@ class HybridBounceDetector:
         x_i, y_i = xs[i], ys[i]
         if x_i < SINGLES_X_MIN - 1.0 or x_i > SINGLES_X_MAX + 1.0:
             return None
-        if y_i < -1.0 or y_i > COURT_Y + 1.0:
+        if y_i < COURT_Y_MIN - 1.0 or y_i > COURT_Y_MAX + 1.0:
             return None
 
         # Cooldown
@@ -999,7 +1000,7 @@ class HybridBounceDetector:
                     cam_px[cname] = [det["pixel_x"], det["pixel_y"]]
 
         in_court = (SINGLES_X_MIN <= x_i <= SINGLES_X_MAX
-                    and 0 <= y_i <= COURT_Y)
+                    and COURT_Y_MIN <= y_i <= COURT_Y_MAX)
 
         bounce = BounceEvent(
             x=float(x_i),

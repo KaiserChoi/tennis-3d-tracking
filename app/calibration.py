@@ -20,12 +20,12 @@ logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Court dimensions — V2 coordinate system: origin at court center (net)
-# X: [-2.745, +2.745], Y: [-11.885, +11.885], Net at y=0
+# X: [-4.115, +4.115], Y: [-11.885, +11.885], Net at y=0
 # ---------------------------------------------------------------------------
 from src.compute_homography import (
     COURT_HALF_LENGTH, COURT_HALF_WIDTH, SERVICE_DIST, NET_Y,
     BASELINE_NEAR, BASELINE_FAR, SERVICE_NEAR, SERVICE_FAR,
-    SIDELINE_LEFT, SIDELINE_RIGHT, COURT_LENGTH, DOUBLES_WIDTH,
+    SIDELINE_LEFT, SIDELINE_RIGHT, COURT_LENGTH, SINGLES_WIDTH,
 )
 
 # 3D world coordinates for 12 labeled keypoints (z=0 on ground plane)
@@ -497,7 +497,7 @@ def run_calibration(
         "calibration_method": "PnP",
         "court_dimensions": {
             "length_m": COURT_LENGTH,
-            "width_m": DOUBLES_WIDTH,
+            "width_m": SINGLES_WIDTH,
             "net_y_m": NET_Y,
         },
         "cam66": results["cam66"],

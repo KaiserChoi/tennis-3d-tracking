@@ -33,7 +33,7 @@ SIDELINE_RIGHT = COURT_HALF_WIDTH    # +4.115
 
 # Legacy compatibility
 COURT_LENGTH = 2 * COURT_HALF_LENGTH  # 23.78
-DOUBLES_WIDTH = 2 * COURT_HALF_WIDTH  # 8.23
+SINGLES_WIDTH = 2 * COURT_HALF_WIDTH  # 8.23 (ITF singles court — project uses singles only)
 
 # ---------------------------------------------------------------------------
 # World coordinates for 13 labeled keypoints (12 corners + net center)
