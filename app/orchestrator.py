@@ -107,18 +107,27 @@ class Orchestrator:
         # _peak_bounces_eval and never touches _live_bounces, rally_sm,
         # _rally_tracker, JSONL, or WebSocket.
         # Params relaxed vs. the offline defaults — live 3D is sparser
-        # (capture_ts drift + missed pairs break continuity), so the density
-        # / seg-length gates would otherwise eat real bounces.
+        # (capture_ts drift + missed pairs break continuity). The key lever
+        # is max_gap_s: offline default 0.2s (~5 frames at 25fps) cuts the
+        # segment on any burst of missed matches; live needs ~0.6s to absorb
+        # typical drops. Sizes also relaxed so the segment-length &
+        # density gates don't swallow the remaining segments.
         self._hybrid_bounce = HybridBounceDetector(
             min_seg_len=8,      # was 15
-            min_dense=10,       # was 20
-            dense_range=15,     # was 20
+            min_dense=8,        # was 20
+            dense_range=12,     # was 20
+            max_gap_s=0.6,      # was 0.2 (offline default)
         )
         self._bounce_detector = PeakBounceDetector(batch_size=10)   # eval only
         self._rally_tracker = RallyTracker()
         self._rally_sm = RallyStateMachine()
-        self._live_bounces: list[dict] = []
+        self._live_bounces: list[dict] = []         # ONLY real Hybrid bounces
+        self._rally_end_markers: list[dict] = []    # synthetic NET/TIMEOUT/... markers
         self._peak_bounces_eval: list[dict] = []   # sidecar, cap 100
+        # Post-filter telemetry — counts per reason (incl. "accepted") so we
+        # can tune thresholds from live data without re-running eval.
+        from collections import Counter as _Counter
+        self._post_filter_stats: _Counter = _Counter()
 
         # Auto report: generate after every N completed rallies
         self._rally_report_interval: int = 10  # 0 = disabled
@@ -610,10 +619,18 @@ class Orchestrator:
                         _tri_smoothed = smoothed_pt
                         hbounce = self._hybrid_bounce.update(smoothed_pt or pt, cam_dets)
 
-                        # --- Gate: dedup once, then fan out the accepted bounce ---
+                        # --- Gate: dedup + precision post-filter, then fan out ---
+                        # The gate runs ONCE before any consumer sees the bounce.
+                        # Net-crossing consumption is tracked via `consumed_nc`
+                        # (object reference, NOT via speed_kmh matching) so the
+                        # rollback on rejection undoes exactly the same entry
+                        # we marked used. Both the dedup path and the post-
+                        # filter-reject path roll back; previously only the
+                        # latter did, so duplicates silently stole crossings.
                         accepted_bounce = None
                         accepted_bd = None
                         accepted_matched_speed = 0
+                        consumed_nc = None
                         if hbounce is not None:
                             bd = hbounce.to_dict()
                             bd["capture_ts"] = capture_ts
@@ -627,10 +644,23 @@ class Orchestrator:
                                     bd["speed_direction"] = nc["direction"]
                                     accepted_matched_speed = nc["speed_kmh"]
                                     nc["_used"] = True
+                                    consumed_nc = nc
                                     break
-                            if not self._is_duplicate_bounce(bd):
-                                accepted_bounce = hbounce
-                                accepted_bd = bd
+                            if self._is_duplicate_bounce(bd):
+                                self._post_filter_stats["duplicate"] += 1
+                                if consumed_nc is not None:
+                                    consumed_nc["_used"] = False
+                                    consumed_nc = None
+                            else:
+                                ok, reason = self._post_filter_bounce(bd)
+                                self._post_filter_stats[reason] += 1
+                                if ok:
+                                    accepted_bounce = hbounce
+                                    accepted_bd = bd
+                                else:
+                                    if consumed_nc is not None:
+                                        consumed_nc["_used"] = False
+                                        consumed_nc = None
 
                         # --- Fan out (every production consumer reads accepted_bounce) ---
                         self._rally_tracker.update(pt, accepted_bounce)
@@ -651,6 +681,43 @@ class Orchestrator:
                                 })
                                 if len(self._ws_bounce_queue) > 100:
                                     self._ws_bounce_queue = self._ws_bounce_queue[-100:]
+
+                        # --- Rally-end marker ---
+                        # Every rally→idle transition should leave ONE visible
+                        # marker. Two cases:
+                        #  (a) accepted_bd is the rally-ender itself (OUT /
+                        #      DOUBLE_BOUNCE / SERVE_FAULT→DOUBLE_FAULT bounce
+                        #      paths) — tag it in place. Stays in _live_bounces.
+                        #  (b) NET / TIMEOUT / SERVE_NET / SERVE_TIMEOUT paths
+                        #      have no bounce this frame — synthesize a marker
+                        #      in _rally_end_markers (SEPARATE list so dedup
+                        #      and F2 post-filter don't see it as a prior
+                        #      real bounce and block the next real one).
+                        if rally_result is not None:
+                            end_reason = rally_result.end_reason
+                            if accepted_bd is not None:
+                                accepted_bd["end_reason"] = end_reason
+                                accepted_bd["rally_end"] = True
+                            else:
+                                end_marker = {
+                                    "x": round(float(x), 4),
+                                    "y": round(float(y), 4),
+                                    "z": round(float(z), 4),
+                                    "timestamp": round(float(now), 4),
+                                    "capture_ts": round(float(capture_ts), 4),
+                                    "in_court": True,  # semantically n/a
+                                    "frame_index": fi,
+                                    "confidence": 0.0,
+                                    "source_camera": "rally_end",
+                                    "side": "near" if y < self._NET_Y else "far",
+                                    "end_reason": end_reason,
+                                    "rally_end": True,
+                                    "synthetic": True,
+                                    "rally_id": rally_result.rally_id,
+                                }
+                                self._rally_end_markers.append(end_marker)
+                                if len(self._rally_end_markers) > 50:
+                                    self._rally_end_markers = self._rally_end_markers[-50:]
                         if len(self._live_bounces) > 50:
                             self._live_bounces = self._live_bounces[-50:]
                         # Append frame to rally raw buffer
@@ -1254,8 +1321,16 @@ class Orchestrator:
                 "rally_state": self._rally_sm.get_state_dict(),
                 "completed_rallies": self._enrich_rallies(),
                 "recent_bounces": list(self._live_bounces[-10:]),
+                # Synthetic rally-end markers for NET/TIMEOUT/SERVE_* paths.
+                # Separate list so dedup/post-filter don't accidentally treat
+                # these as prior real bounces. Dashboard overlays them on the
+                # minimap with a distinct style.
+                "rally_end_markers": list(self._rally_end_markers[-10:]),
                 # Peak sidecar (eval only)
                 "peak_bounces_eval": list(self._peak_bounces_eval[-10:]),
+                # Post-filter telemetry — count per rejection reason plus "accepted".
+                # Tune thresholds from live data by watching these counts.
+                "post_filter_stats": dict(self._post_filter_stats),
                 # Legacy simpler tracker — kept for reference
                 "legacy_rally_state": self._rally_tracker.get_state().to_dict(),
                 "legacy_completed_rallies": self._rally_tracker.get_completed_rallies(),
@@ -1287,6 +1362,74 @@ class Orchestrator:
             if (dx * dx + dy * dy) ** 0.5 < self._BOUNCE_DEDUP_DIST:
                 return True
         return False
+
+    # ------------------------------------------------------------------
+    # Bounce precision post-filter (applied AFTER Hybrid + dedup, BEFORE
+    # any production consumer sees the event). See
+    # memory/project_bounce_architecture.md "Next-step roadmap A" for the
+    # 4 candidate filters — v1 ships F1 + F2. F3 (speed/height continuity)
+    # and F4 (net-crossing context) are parameterized but disabled by
+    # default; flip the toggles below after side-by-side eval.
+    # ------------------------------------------------------------------
+    _POSTFILT_MIN_INTERVAL_S = 0.4      # stricter than dedup's 0.7s
+    _POSTFILT_NET_CTX_WINDOW_S = 3.0    # F4: net crossing must be within this
+    _POSTFILT_F1_ENABLED = True         # reject bounces while rally_sm is idle
+    _POSTFILT_F2_ENABLED = True         # min interval to previous accepted
+    _POSTFILT_F3_ENABLED = False        # speed/height continuity (not implemented yet)
+    _POSTFILT_F4_ENABLED = False        # net-crossing context (disabled: too strict for serves)
+
+    def _post_filter_bounce(self, bd: dict) -> tuple[bool, str]:
+        """Run enabled precision filters on an already-Hybrid-approved,
+        non-duplicate bounce. Return (accepted, reason). Reason names are
+        stable strings so _post_filter_stats can aggregate them.
+        """
+        # F1: rally state — IDLE means nothing interesting can be happening.
+        # rally_sm transitions to SERVING/RALLY on its very first point of
+        # a new session, and Hybrid needs ~17 frames of buffer before it
+        # can fire, so by the time this filter runs the state machine has
+        # long moved past IDLE unless the ball just stopped playing.
+        if self._POSTFILT_F1_ENABLED:
+            try:
+                state = self._rally_sm.get_state_dict().get("state", "idle")
+            except Exception:
+                state = "idle"
+            if state in ("idle", "pending"):
+                return False, "f1_rally_idle"
+
+        # F2: minimum interval since last accepted bounce. Tighter than the
+        # dedup gate (which only catches near-simultaneous dual reports of
+        # the *same* physical bounce). Real rally bounces are usually > 0.4s
+        # apart; anything tighter is likely a second spurious report.
+        if self._POSTFILT_F2_ENABLED and self._live_bounces:
+            ts = bd.get("timestamp")
+            if ts is not None:
+                last = self._live_bounces[-1]
+                dt = ts - last.get("timestamp", 0)
+                if 0 <= dt < self._POSTFILT_MIN_INTERVAL_S:
+                    return False, "f2_min_interval"
+
+        # F3: speed/height continuity — placeholder. Hybrid's internal
+        # v_window + min_speed already cover the primary signal; a more
+        # sophisticated check (e.g. require z to rise in the next ~5
+        # frames) would need read-ahead which the streaming detector
+        # doesn't provide. Revisit if F1+F2 aren't enough.
+        # if self._POSTFILT_F3_ENABLED:
+        #     pass
+
+        # F4: net-crossing context — require a net crossing within the
+        # last N seconds. Disabled by default because slow serves or
+        # drop-shots may not produce a _net_crossings entry (speed gate
+        # SPEED_MIN filters out < 30 km/h crossings), which would drop
+        # legitimate slow-play bounces.
+        if self._POSTFILT_F4_ENABLED:
+            ts = bd.get("timestamp")
+            if ts is None or not self._net_crossings:
+                return False, "f4_no_net_crossing"
+            recent = self._net_crossings[-1].get("timestamp", 0)
+            if ts - recent > self._POSTFILT_NET_CTX_WINDOW_S:
+                return False, "f4_stale_net_crossing"
+
+        return True, "accepted"
 
     # ------------------------------------------------------------------
     # Debug output for GT comparison
@@ -1619,7 +1762,9 @@ class Orchestrator:
 
             # Production + sidecar bounce buffers
             self._live_bounces.clear()
+            self._rally_end_markers.clear()
             self._peak_bounces_eval.clear()
+            self._post_filter_stats.clear()
 
             # Rally/live buffers
             self._live_rallies.clear()

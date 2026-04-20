@@ -1304,36 +1304,53 @@ function drawCourt(canvas, bounces){
   ctx.beginPath();ctx.moveTo(tx(CX),ty(-HL));ctx.lineTo(tx(CX),ty(-HL+0.4));ctx.stroke();
   ctx.beginPath();ctx.moveTo(tx(CX),ty(HL));ctx.lineTo(tx(CX),ty(HL-0.4));ctx.stroke();
 
-  // --- Bounce markers: LATEST 5, green=IN red=OUT ---
+  // --- Bounce markers: LATEST 5. green=IN red=OUT, synthetic rally-end
+  // markers (NET/TIMEOUT/SERVE_NET/SERVE_TIMEOUT paths) shown as amber X ---
   if(bounces&&bounces.length){
     const last5 = bounces.slice(-5);
     last5.forEach((b,i)=>{
       const bx=tx(b.x),by=ty(b.y);
+      const isSynthetic = b.synthetic === true;
       const isIn = b.in_court;
-      const color = isIn ? '#4caf50' : '#f44336';
       const age = last5.length - 1 - i;
       const num = age + 1;
       const r = age === 0 ? 8 : 6;
       ctx.globalAlpha = age === 0 ? 1.0 : age === 1 ? 0.8 : age === 2 ? 0.6 : age === 3 ? 0.4 : 0.25;
 
-      if(isIn){
+      if(isSynthetic){
+        // Amber X for rally-end markers with no real landing
+        ctx.strokeStyle='#ff9800';ctx.lineWidth=2.5;
+        ctx.beginPath();ctx.moveTo(bx-r,by-r);ctx.lineTo(bx+r,by+r);ctx.stroke();
+        ctx.beginPath();ctx.moveTo(bx+r,by-r);ctx.lineTo(bx-r,by+r);ctx.stroke();
+      } else if(isIn){
+        const color='#4caf50';
         ctx.beginPath();ctx.arc(bx,by,r,0,Math.PI*2);
         ctx.fillStyle=color;ctx.fill();
         ctx.strokeStyle='#fff';ctx.lineWidth=1.5;ctx.stroke();
-      }else{
+      } else {
+        const color='#f44336';
         ctx.beginPath();ctx.arc(bx,by,r,0,Math.PI*2);
         ctx.strokeStyle=color;ctx.lineWidth=2.5;ctx.stroke();
       }
+
       ctx.font='bold 9px Lato';ctx.fillStyle='#fff';
       ctx.textAlign='center';ctx.textBaseline='middle';
       ctx.fillText(num,bx,by+1);
       ctx.textAlign='start';ctx.textBaseline='alphabetic';
-      // IN/OUT + speed label
-      ctx.fillStyle=color;ctx.font='bold 8px Lato';
-      ctx.fillText(isIn?'IN':'OUT',bx+r+4,by+3);
+
+      // Label: IN/OUT for real bounces, end_reason for synthetic markers
+      const labelColor = isSynthetic ? '#ff9800' : (isIn ? '#4caf50' : '#f44336');
+      ctx.fillStyle=labelColor;ctx.font='bold 8px Lato';
+      const primaryLabel = isSynthetic ? (b.end_reason || 'END').toUpperCase()
+                                       : (isIn ? 'IN' : 'OUT');
+      ctx.fillText(primaryLabel,bx+r+4,by+3);
       if(b.speed_kmh){
         ctx.fillStyle='#ffd700';ctx.font='bold 9px Lato';
         ctx.fillText(Math.round(b.speed_kmh)+'km/h',bx+r+4,by+14);
+      } else if(b.end_reason && !isSynthetic){
+        // Bounce that also ended a rally — show the reason below IN/OUT
+        ctx.fillStyle='#ff9800';ctx.font='bold 8px Lato';
+        ctx.fillText(b.end_reason.toUpperCase(),bx+r+4,by+14);
       }
       ctx.globalAlpha=1.0;
     });
@@ -1809,12 +1826,17 @@ async function poll(){
     // Extract analytics data from status
     const analytics=d.analytics||{};
     const recentBounces=analytics.recent_bounces||[];
+    const rallyEndMarkers=analytics.rally_end_markers||[];
     const rallyState=analytics.rally_state||{};
 
     const b=d.latest_ball_3d;
     const latestDets=d.latest_detections||null;
-    drawCourt(document.getElementById('minimap'),recentBounces);
-    updateGTStats(recentBounces);
+    // Merge for display: real bounces + synthetic rally-end markers, sorted
+    // by timestamp so last-5 picking picks the latest events chronologically.
+    const minimapEvents=[...recentBounces, ...rallyEndMarkers]
+        .sort((a,b)=>(a.timestamp||0)-(b.timestamp||0));
+    drawCourt(document.getElementById('minimap'),minimapEvents);
+    updateGTStats(recentBounces);  // GT accuracy only counts real bounces
 
     // Update rally state display
     const stateEl=document.getElementById('rally-state');

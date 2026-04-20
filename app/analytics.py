@@ -90,11 +90,25 @@ class BounceEvent:
 
 
 class RallyEndReason(str, Enum):
-    """Reason a rally ended."""
-    OUT = "out"
-    NET = "net"
-    DOUBLE_BOUNCE = "double_bounce"
-    TIMEOUT = "timeout"
+    """Reason a rally ended.
+
+    Per standard tennis rules the point ends on: ball out of play, net failure,
+    double bounce, timeout, or double fault. First-serve faults / nets / timeouts
+    do NOT end the point — they switch the server to the 2nd attempt instead
+    (see RallyStateMachine._handle_serve_fault).
+    """
+    OUT = "out"                    # rally bounce landed out of court
+    NET = "net"                    # ball hit the net in rally
+    DOUBLE_BOUNCE = "double_bounce"  # same side bounced twice without a crossing
+    TIMEOUT = "timeout"            # RALLY silence > timeout_seconds
+    DOUBLE_FAULT = "double_fault"  # both serve attempts failed
+    # Historic / used only internally when the 2nd attempt fails — the
+    # outward end_reason for double-fault cases is DOUBLE_FAULT. These
+    # stay for debugging when future tests want to know *how* a serve
+    # attempt failed on its way to double-fault.
+    SERVE_TIMEOUT = "serve_timeout"  # SERVING silence
+    SERVE_NET = "serve_net"        # serve hit the net and didn't cross
+    SERVE_FAULT = "serve_fault"    # serve bounced before crossing / out of service box
 
 
 @dataclass
@@ -838,6 +852,7 @@ class HybridBounceDetector:
         speed_dt: int = 3,
         cooldown_frames: int = 12,
         fps: float = 25.0,
+        max_gap_s: float = 0.2,
     ):
         self._buf: list[dict] = []
         self._buf_size = buf_size
@@ -851,6 +866,11 @@ class HybridBounceDetector:
         self._speed_dt = speed_dt
         self._cooldown = cooldown_frames
         self._fps = fps
+        # Max timestamp gap allowed within a continuous segment. Offline data
+        # is dense (5-frame gap at 25fps == 0.2s is fine); live is sparser,
+        # ~4% missed-match rate can burst >5 frames, so orchestrator passes a
+        # looser value (e.g. 0.5s) for live.
+        self._max_gap_s = max_gap_s
         self._last_bounce_ts: float = 0.0
 
     def reset(self):
@@ -878,10 +898,10 @@ class HybridBounceDetector:
         zs = np.array([e["pt"]["z"] for e in self._buf])
         ts = np.array([e["pt"]["timestamp"] for e in self._buf])
 
-        # Find continuous segment at the end of buffer (no gap > 0.2s)
+        # Find continuous segment at the end of buffer (gap-tolerant)
         seg_start = n - 1
         for i in range(n - 2, -1, -1):
-            if ts[i + 1] - ts[i] > 0.2:
+            if ts[i + 1] - ts[i] > self._max_gap_s:
                 break
             seg_start = i
         seg_len = n - seg_start
@@ -999,32 +1019,65 @@ class HybridBounceDetector:
                 if det and det.get("pixel_x") is not None:
                     cam_px[cname] = [det["pixel_x"], det["pixel_y"]]
 
-        # Ported from EnhancedBounceDetector — ground-plane single-camera
-        # homography is more accurate than triangulated 3D at low z.
-        # NB: acceptance above already used triangulated (x_i, y_i); this only
-        # corrects the *emitted* landing position.
-        land_x, land_y, src = self._select_landing_coords(i)
+        # Landing refinement: the V-shape/parabolic check locks on a
+        # *candidate* frame `i` but the actual deepest point of the dip may
+        # be 1-4 frames away. For the emitted (x, y, z) pick the z-min frame
+        # in a small symmetric window around `i` (clipped to the current
+        # segment), then route that frame's cam_dets through the homography
+        # landing selector. This keeps "has a bounce happened?" decided by
+        # the statistical filters above while improving "where exactly did
+        # it land?" — matches user feedback to separate event vs. position.
+        land_idx = self._refine_landing_idx(i, seg_start, n, half_win=4)
+        land_z = float(zs[land_idx])
+        land_ts = float(ts[land_idx])
+        land_x, land_y, src = self._select_landing_coords(land_idx)
 
         in_court = (SINGLES_X_MIN <= land_x <= SINGLES_X_MAX
                     and COURT_Y_MIN <= land_y <= COURT_Y_MAX)
 
+        # refresh cam_px if refinement moved to a different frame
+        ref_cam_dets = self._buf[land_idx]["cam"]
+        if ref_cam_dets:
+            cam_px = {}
+            for cname, det in ref_cam_dets.items():
+                if det and det.get("pixel_x") is not None:
+                    cam_px[cname] = [det["pixel_x"], det["pixel_y"]]
+
         bounce = BounceEvent(
             x=float(land_x),
             y=float(land_y),
-            z=float(z_i),
-            timestamp=float(pt_ts),
+            z=land_z,
+            timestamp=land_ts,
             in_court=in_court,
-            frame_index=self._buf[i]["pt"].get("frame_index"),
+            frame_index=self._buf[land_idx]["pt"].get("frame_index"),
             confidence=round(min(1.0, v_score + 0.1 * best_ratio), 3),
             source_camera=src,
             cam_pixels=cam_px,
         )
         logger.info(
-            "HybridBounce: (%.2f, %.2f, z=%.2f) %s [%s] v=%.2f p=%.1f spd=%.0f",
-            land_x, land_y, z_i, "IN" if in_court else "OUT", src,
-            v_score, best_ratio, speed if dt > 1e-6 else 0,
+            "HybridBounce: (%.2f, %.2f, z=%.2f) %s [%s] v=%.2f p=%.1f spd=%.0f refine=%+d",
+            land_x, land_y, land_z, "IN" if in_court else "OUT", src,
+            v_score, best_ratio, speed if dt > 1e-6 else 0, land_idx - i,
         )
         return bounce
+
+    def _refine_landing_idx(self, i: int, seg_start: int, n: int, half_win: int = 4) -> int:
+        """Pick z-min frame index within [i-half_win, i+half_win] clipped to
+        the current continuous segment. Used to pick a more accurate landing
+        frame than the V-shape check point (which sits in the middle of the
+        dip, not necessarily its deepest point)."""
+        lo = max(seg_start, i - half_win)
+        hi = min(n - 1, i + half_win)
+        if lo > hi:
+            return i
+        best_j = i
+        best_z = float("inf")
+        for j in range(lo, hi + 1):
+            z = self._buf[j]["pt"]["z"]
+            if z < best_z:
+                best_z = z
+                best_j = j
+        return best_j
 
     def _select_landing_coords(self, i: int) -> tuple[float, float, str]:
         """Choose landing (x, y) for a bounce at buffer index `i`.
@@ -1119,6 +1172,7 @@ class RallyStateMachine:
 
     class State(str, Enum):
         IDLE = "idle"
+        PENDING = "pending"   # first activity seen, not yet committed to a real state
         SERVING = "serving"
         RALLY = "rally"
 
@@ -1129,12 +1183,14 @@ class RallyStateMachine:
         fps: float = 25.0,
         net_hit_z_drop: float = 0.3,
         net_y_tolerance: float = 1.5,
+        serve_confirm_frames: int = 3,   # PENDING → SERVING/RALLY needs N frames
     ):
         self.timeout_seconds = timeout_seconds
         self.gap_seconds = gap_seconds
         self.fps = fps
         self.net_hit_z_drop = net_hit_z_drop
         self.net_y_tolerance = net_y_tolerance
+        self.serve_confirm_frames = serve_confirm_frames
 
         self._state = self.State.IDLE
         self._rally_id = 0
@@ -1151,6 +1207,27 @@ class RallyStateMachine:
         self._last_frame: int = 0
         self._rally_start_time: float = 0.0
         self._rally_start_frame: Optional[int] = None
+
+        # PENDING confirmation window
+        self._pending_points: list[dict] = []
+        self._pending_baseline_count: int = 0
+        self._pending_start_ts: float = 0.0
+
+        # Serve-rule tracking (1st/2nd attempt, let, service-box validation)
+        self._serve_attempt: int = 1                    # 1 or 2
+        self._serve_net_touched: bool = False           # net grazed during SERVING
+        self._awaiting_first_serve_bounce: bool = False  # just crossed, expect bounce-in-box
+        self._let_count: int = 0                       # lets in this point
+
+        # Rally-just-ended sticky flag. Lets IDLE→PENDING fire before the
+        # normal 2s gap when the next point resumes quickly — common in
+        # real play (between 1st and 2nd serve, or between points during a
+        # tiebreak). Cleared on next PENDING entry or on reset().
+        self._just_ended_rally: bool = False
+        # Min time-since-end before the just_ended fast-path can fire.
+        # 0.3s (~7 frames at 25fps) is enough to avoid the same-frame
+        # trailing effects of the point that just ended.
+        self._quick_restart_min_dt: float = 0.3
 
         self._completed: list[RallyResult] = []
 
@@ -1172,71 +1249,169 @@ class RallyStateMachine:
         y = point_3d["y"]
         z = point_3d["z"]
         fi = point_3d.get("frame_index", 0)
+        ray_dist = point_3d.get("ray_dist", 0.0)
         current_side = "near" if y < NET_Y else "far"
+        is_baseline = y < BASELINE_NEAR_MAX or y > BASELINE_FAR_MIN
 
         result = None
-
-        # Check timeout
         time_gap = now - self._last_point_time if self._last_point_time > 0 else 0
-        if self._state == self.State.RALLY and time_gap > self.timeout_seconds:
-            result = self._end_rally(fi, now, RallyEndReason.TIMEOUT)
-        elif self._state == self.State.SERVING and time_gap > self.timeout_seconds:
-            self._state = self.State.IDLE
 
-        # Handle state transitions
+        # ─── Timeouts per state ─────────────────────────────────────────
+        # RALLY silence → TIMEOUT (ends the point).
+        # SERVING silence → route through serve-fault handler: 1st attempt
+        # rolls to 2nd serve; 2nd attempt ends the point as DOUBLE_FAULT.
+        # PENDING silence → reset quietly (no rally committed yet).
+        if time_gap > self.timeout_seconds:
+            if self._state == self.State.RALLY:
+                result = self._end_rally(fi, now, RallyEndReason.TIMEOUT)
+            elif self._state == self.State.SERVING:
+                result = self._handle_serve_fault(fi, now, RallyEndReason.SERVE_TIMEOUT)
+        if self._state == self.State.PENDING and time_gap > self.gap_seconds:
+            # Never committed to a rally; just reset.
+            self._state = self.State.IDLE
+            self._pending_points = []
+            self._pending_baseline_count = 0
+
+        # ─── IDLE → PENDING ─────────────────────────────────────────
+        # Two entry paths (both gated by "no active state yet"):
+        #   (a) Normal gap: time_gap > gap_seconds, or cold start
+        #       (_last_point_time == 0). This is the baseline case.
+        #   (b) Quick restart: a rally JUST ended and we see the ball
+        #       re-entering the baseline zone. Needed for 2nd serve and
+        #       tight between-point turnarounds that complete in < 2s —
+        #       the normal gap trigger would otherwise keep us stuck in
+        #       IDLE. A small min-dt guard (_quick_restart_min_dt) keeps
+        #       the tail of the just-ended point from false-triggering.
         if self._state == self.State.IDLE:
-            if time_gap > self.gap_seconds or self._last_point_time == 0:
-                # New activity after gap
-                is_baseline = y < BASELINE_NEAR_MAX or y > BASELINE_FAR_MIN
-                if is_baseline:
-                    self._start_serving(now, fi, current_side)
+            normal_gap = time_gap > self.gap_seconds or self._last_point_time == 0
+            quick_restart = (
+                self._just_ended_rally
+                and is_baseline
+                and time_gap >= self._quick_restart_min_dt
+            )
+            if normal_gap or quick_restart:
+                self._state = self.State.PENDING
+                self._pending_points = []
+                self._pending_baseline_count = 0
+                self._pending_start_ts = now
+                self._just_ended_rally = False  # consume the flag
+                # IMPORTANT: reset _prev_y/_prev_z on IDLE→PENDING so
+                # net-crossing detection doesn't fire across the gap.
+                self._prev_y = None
+                self._prev_z = None
+
+        # ─── PENDING: accumulate evidence, then commit ────────────────
+        if self._state == self.State.PENDING:
+            self._pending_points.append(point_3d)
+            if is_baseline:
+                self._pending_baseline_count += 1
+
+            # Fast path: if ball crossed the net while still PENDING, we
+            # joined the rally mid-flight (or the first buffered frame is
+            # already airborne) — go straight to RALLY and count the
+            # crossing as a stroke.
+            net_crossed_pending = False
+            if self._prev_y is not None:
+                net_crossed_pending = (self._prev_y < NET_Y <= y) or (self._prev_y >= NET_Y > y)
+            if net_crossed_pending:
+                self._start_rally(now, fi, "")
+                self._stroke_count = 1
+                self._last_side = current_side
+            elif len(self._pending_points) >= self.serve_confirm_frames:
+                # Enough evidence accumulated. If most points are in the
+                # baseline zone, call it SERVING; otherwise the ball is
+                # already in the middle → RALLY.
+                majority_baseline = (
+                    self._pending_baseline_count >
+                    len(self._pending_points) // 2
+                )
+                if majority_baseline:
+                    first_y = self._pending_points[0]["y"]
+                    first_side = "near" if first_y < NET_Y else "far"
+                    self._start_serving(now, fi, first_side)
                 else:
                     self._start_rally(now, fi, "")
 
-        # Detect net crossing
-        if self._prev_y is not None:
+        # ─── Net crossing detection (only in SERVING / RALLY) ────────
+        if self._prev_y is not None and self._state in (self.State.SERVING, self.State.RALLY):
             crossed = (self._prev_y < NET_Y <= y) or (self._prev_y >= NET_Y > y)
             if crossed:
                 if self._state == self.State.SERVING:
+                    # Serve cleared the net — but we don't yet know if it
+                    # lands in the service box. Move to RALLY structurally
+                    # (so downstream code reads state=rally) but flag that
+                    # the next bounce is the serve-validity check.
                     self._state = self.State.RALLY
-                    logger.info(
-                        "Rally %d: serve crossed net (frame %d)", self._rally_id, fi
-                    )
-                if self._state == self.State.RALLY:
+                    self._stroke_count += 1
+                    self._bounce_count_since_cross = 0
+                    self._awaiting_first_serve_bounce = True
+                    logger.info("Rally %d attempt %d: serve crossed net (frame %d)",
+                                self._rally_id, self._serve_attempt, fi)
+                elif self._state == self.State.RALLY:
                     self._stroke_count += 1
                     self._bounce_count_since_cross = 0
                 self._last_side = current_side
 
-        # Detect net hit: Y near net and Z drops sharply
-        # Require low ray_distance to avoid false triggers from misdetection
-        ray_dist = point_3d.get("ray_dist", 0.0)
+        # ─── Net hit detection — flag only, do not end rally ─────────
+        # A net graze during serve can become either:
+        #   (a) NET FAULT   — ball didn't cross, bounces on server side
+        #   (b) LET         — ball grazed net but still landed in service box
+        #   (c) SERVE OUT   — ball grazed net, crossed, landed outside box
+        # We can't tell from the net-touch alone; decide on the subsequent
+        # bounce. In RALLY we still end immediately (no replays mid-rally).
         if (
-            self._state == self.State.RALLY
+            self._state in (self.State.SERVING, self.State.RALLY)
             and self._prev_z is not None
             and abs(y - NET_Y) < self.net_y_tolerance
             and self._prev_z - z > self.net_hit_z_drop
             and z < NET_HEIGHT
             and ray_dist < 1.5
         ):
-            result = self._end_rally(fi, now, RallyEndReason.NET)
-
-        # Handle bounce events
-        if bounce is not None and self._state == self.State.RALLY:
-            self._bounces.append(bounce)
-
-            # Check out of court
-            if not bounce.in_court:
-                result = self._end_rally(fi, now, RallyEndReason.OUT)
-
-            # Check double bounce (same side, no net crossing between)
-            elif self._last_bounce_side == bounce.side:
-                self._bounce_count_since_cross += 1
-                if self._bounce_count_since_cross >= 2:
-                    result = self._end_rally(fi, now, RallyEndReason.DOUBLE_BOUNCE)
+            if self._state == self.State.RALLY and not self._awaiting_first_serve_bounce:
+                result = self._end_rally(fi, now, RallyEndReason.NET)
             else:
-                self._bounce_count_since_cross = 1
+                # SERVING net touch, or RALLY-but-waiting-for-serve-bounce
+                # (let is still possible). Just record the touch; real
+                # decision happens on bounce / timeout.
+                if not self._serve_net_touched:
+                    logger.info("Rally %d attempt %d: serve touched net (frame %d)",
+                                self._rally_id, self._serve_attempt, fi)
+                self._serve_net_touched = True
 
-            self._last_bounce_side = bounce.side
+        # ─── Bounce handling ────────────────────────────────────────
+        if bounce is not None:
+            if self._state == self.State.RALLY and self._awaiting_first_serve_bounce:
+                # First bounce after serve crosses: validate service box
+                in_box = self._is_valid_serve_bounce(bounce)
+                self._awaiting_first_serve_bounce = False
+                if not in_box:
+                    # Serve landed outside the target service box → fault.
+                    result = self._handle_serve_fault(fi, now, RallyEndReason.SERVE_FAULT)
+                elif self._serve_net_touched:
+                    # Net was grazed but ball still landed in box → LET.
+                    # Replay the SAME attempt (1st stays 1st, 2nd stays 2nd).
+                    self._let_replay()
+                else:
+                    # Valid serve — register the bounce normally and continue rally.
+                    self._bounces.append(bounce)
+                    self._last_bounce_side = bounce.side
+                    self._bounce_count_since_cross = 1
+            elif self._state == self.State.RALLY:
+                self._bounces.append(bounce)
+                if not bounce.in_court:
+                    result = self._end_rally(fi, now, RallyEndReason.OUT)
+                elif self._last_bounce_side == bounce.side:
+                    self._bounce_count_since_cross += 1
+                    if self._bounce_count_since_cross >= 2:
+                        result = self._end_rally(fi, now, RallyEndReason.DOUBLE_BOUNCE)
+                else:
+                    self._bounce_count_since_cross = 1
+                self._last_bounce_side = bounce.side
+            elif self._state == self.State.SERVING:
+                # Bounce before the ball cleared the net → serve fault (1st
+                # attempt routes to 2nd serve; 2nd attempt ends the point).
+                self._bounces.append(bounce)
+                result = self._handle_serve_fault(fi, now, RallyEndReason.SERVE_FAULT)
 
         self._prev_y = y
         self._prev_z = z
@@ -1254,6 +1429,9 @@ class RallyStateMachine:
             "server_side": self._server_side,
             "bounce_count": len(self._bounces),
             "last_side": self._last_side,
+            "serve_attempt": self._serve_attempt,
+            "let_count": self._let_count,
+            "awaiting_first_serve_bounce": self._awaiting_first_serve_bounce,
         }
 
     def get_completed_rallies(self) -> list[RallyResult]:
@@ -1268,6 +1446,84 @@ class RallyStateMachine:
         self._prev_z = None
         self._last_point_time = 0.0
         self._completed.clear()
+        self._pending_points = []
+        self._pending_baseline_count = 0
+        self._serve_attempt = 1
+        self._serve_net_touched = False
+        self._awaiting_first_serve_bounce = False
+        self._let_count = 0
+        self._just_ended_rally = False
+
+    def _is_valid_serve_bounce(self, bounce: BounceEvent) -> bool:
+        """True if a first-serve bounce landed inside the receiver's service
+        box. Simplified rule — we require the correct receiving-side service
+        box (not the exact deuce/ad diagonal), because tracking diagonal
+        alternation would require point-level score state.
+
+        Receiving side is the opposite half from the server, so for a near
+        server the serve must land 0 < y < SERVICE_LINE_FAR and vice versa.
+        """
+        # Must be inside singles sidelines
+        if abs(bounce.x) > SINGLES_X_MAX:
+            return False
+        if self._server_side == "near":
+            return 0 < bounce.y < SERVICE_LINE_FAR
+        if self._server_side == "far":
+            return SERVICE_LINE_NEAR < bounce.y < 0
+        # Unknown server (shouldn't happen once SERVING has been reached)
+        return False
+
+    def _handle_serve_fault(
+        self, fi: int, now: float, reason: RallyEndReason
+    ) -> Optional[RallyResult]:
+        """Route a failed serve attempt.
+
+        1st attempt failure → don't end the point, switch to 2nd serve.
+        2nd attempt failure → end the point as DOUBLE_FAULT.
+        """
+        if self._serve_attempt == 1:
+            # First serve failed — keep the rally_id, switch to 2nd attempt.
+            logger.info(
+                "Rally %d: 1st serve %s → 2nd serve",
+                self._rally_id, reason.value,
+            )
+            self._serve_attempt = 2
+            self._state = self.State.SERVING
+            self._serve_net_touched = False
+            self._awaiting_first_serve_bounce = False
+            self._stroke_count = 0
+            self._bounces = []
+            self._bounce_count_since_cross = 0
+            self._last_bounce_side = ""
+            self._prev_y = None
+            self._prev_z = None
+            # Keep _rally_start_time / _server_side — this is the same point.
+            return None
+        # Second serve failed → point ends as double fault.
+        logger.info(
+            "Rally %d: 2nd serve %s → DOUBLE_FAULT",
+            self._rally_id, reason.value,
+        )
+        return self._end_rally(fi, now, RallyEndReason.DOUBLE_FAULT)
+
+    def _let_replay(self) -> None:
+        """Net graze + valid service-box landing = let. Replay the same
+        attempt (attempt counter unchanged) by re-entering SERVING. We
+        do NOT call _end_rally — the point is still live, just the serve
+        is re-taken.
+        """
+        self._let_count += 1
+        logger.info("Rally %d attempt %d: LET — replay",
+                    self._rally_id, self._serve_attempt)
+        self._state = self.State.SERVING
+        self._serve_net_touched = False
+        self._awaiting_first_serve_bounce = False
+        self._stroke_count = 0
+        self._bounces = []
+        self._bounce_count_since_cross = 0
+        self._last_bounce_side = ""
+        self._prev_y = None
+        self._prev_z = None
 
     # ---- internals ----
 
@@ -1281,6 +1537,11 @@ class RallyStateMachine:
         self._last_bounce_side = ""
         self._rally_start_time = now
         self._rally_start_frame = fi
+        # Fresh point — reset attempt/let/validation flags.
+        self._serve_attempt = 1
+        self._serve_net_touched = False
+        self._awaiting_first_serve_bounce = False
+        self._let_count = 0
         # Reset prev tracking so stale y/z from previous rally can't trigger
         # spurious net-crossing or net-hit detection on the first frame.
         self._prev_y = None
@@ -1297,6 +1558,12 @@ class RallyStateMachine:
         self._last_bounce_side = ""
         self._rally_start_time = now
         self._rally_start_frame = fi
+        # No serve-validation phase when we jump straight to RALLY (we missed
+        # the serve). Still reset attempt/let state for clean book-keeping.
+        self._serve_attempt = 1
+        self._serve_net_touched = False
+        self._awaiting_first_serve_bounce = False
+        self._let_count = 0
         self._prev_y = None
         self._prev_z = None
         logger.info("Rally %d: started (frame %d)", self._rally_id, fi)
@@ -1344,6 +1611,15 @@ class RallyStateMachine:
         self._bounces = []
         self._bounce_count_since_cross = 0
         self._last_bounce_side = ""
+        self._pending_points = []
+        self._pending_baseline_count = 0
+        self._serve_attempt = 1
+        self._serve_net_touched = False
+        self._awaiting_first_serve_bounce = False
+        self._let_count = 0
+        # Signal the quick-restart path: the next baseline-zone activity
+        # can start a new PENDING without waiting gap_seconds.
+        self._just_ended_rally = True
 
         return result
 
