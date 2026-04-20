@@ -247,6 +247,7 @@ def run_pipeline(
                         "confidence": conf, "blob_sum": conf,
                         "timestamp": time.time(),
                         "capture_ts": capture_ts_buffer[0],
+                        "frame_index": frame_id_buffer[i] if i < len(frame_id_buffer) else 0,
                         "candidates": candidates,
                     }
                     try:
@@ -282,6 +283,7 @@ def run_pipeline(
                         "confidence": conf, "blob_sum": conf,
                         "timestamp": time.time(),
                         "capture_ts": capture_ts_buffer[0],
+                        "frame_index": frame_id_buffer[i] if i < len(frame_id_buffer) else 0,
                         "candidates": candidates,
                     }
                     try:

@@ -20,10 +20,11 @@ class HomographyTransformer:
         self.H_world2img = np.array(cam_data["H_world_to_image"], dtype=np.float64)
         self.court = data.get("court_dimensions", {})
 
-        # Court X bounds for blob filtering
+        # Court X bounds for blob filtering (V2: centered at x=0)
         court_w = self.court.get("width_m", 8.23)
-        self.court_x_min = -court_x_margin
-        self.court_x_max = court_w + court_x_margin
+        half_w = court_w / 2
+        self.court_x_min = -half_w - court_x_margin
+        self.court_x_max =  half_w + court_x_margin
 
         logger.info(
             "[%s] Homography loaded (reproj error: %.4fm, court_x: [%.1f, %.1f])",

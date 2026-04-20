@@ -1213,6 +1213,10 @@ class RallyStateMachine:
         self._last_bounce_side = ""
         self._rally_start_time = now
         self._rally_start_frame = fi
+        # Reset prev tracking so stale y/z from previous rally can't trigger
+        # spurious net-crossing or net-hit detection on the first frame.
+        self._prev_y = None
+        self._prev_z = None
         logger.info("Rally %d: serving from %s (frame %d)", self._rally_id, side, fi)
 
     def _start_rally(self, now: float, fi: int, server_side: str) -> None:
@@ -1225,6 +1229,8 @@ class RallyStateMachine:
         self._last_bounce_side = ""
         self._rally_start_time = now
         self._rally_start_frame = fi
+        self._prev_y = None
+        self._prev_z = None
         logger.info("Rally %d: started (frame %d)", self._rally_id, fi)
 
     def _end_rally(

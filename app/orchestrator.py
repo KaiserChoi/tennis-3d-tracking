@@ -147,7 +147,8 @@ class Orchestrator:
         self._net_crossings: list[dict] = []
         self._NET_Y = 0.0  # V2: net at y=0
         self._SPEED_MIN = 30   # km/h — consumer minimum
-        self._SPEED_MAX = 150  # km/h — consumer maximum
+        self._SPEED_MAX = 150  # km/h — consumer maximum (net-crossing gate)
+        self._MAX_PHYSICAL_SPEED = 280  # km/h — physics gate (world record ~263 km/h)
 
         # 3D display WebSocket push
         self._ws_bounce_queue: list[dict] = []  # bounces to push
@@ -499,17 +500,25 @@ class Orchestrator:
                         d1.get("capture_ts", d1["timestamp"]),
                         d2.get("capture_ts", d2["timestamp"]),
                     )
+                    # Use max of the two cameras' frame_index (they may differ slightly)
+                    fi = max(d1.get("frame_index", 0), d2.get("frame_index", 0))
                     pt = {"x": x, "y": y, "z": z, "timestamp": now,
-                          "capture_ts": capture_ts}
+                          "capture_ts": capture_ts, "frame_index": fi}
                     if self._prev_3d is not None:
-                        # Compute per-frame speed and buffer it
+                        # Compute per-frame speed and buffer it.
+                        # Physics gate: tennis ball max ~263 km/h world record.
+                        # Displacement > this in one frame = false detection or
+                        # pair mismatch → skip so we don't pollute the buffer or
+                        # inflate _last_frame_speed_kmh shown on dashboard.
                         t_delta = now - self._prev_3d["timestamp"]
                         if t_delta > 0.001:
                             dx = x - self._prev_3d["x"]
                             dy = y - self._prev_3d["y"]
                             dz = z - self._prev_3d["z"]
-                            dist = (dx**2 + dy**2 + dz**2) ** 0.5
-                            self._speed_buffer.append(dist / t_delta * 3.6)  # km/h
+                            dist = (dx * dx + dy * dy + dz * dz) ** 0.5
+                            speed_kmh_raw = dist / t_delta * 3.6
+                            if speed_kmh_raw <= self._MAX_PHYSICAL_SPEED:
+                                self._speed_buffer.append(speed_kmh_raw)
 
                         # Net crossing detection
                         prev_y = self._prev_3d["y"]
@@ -537,9 +546,11 @@ class Orchestrator:
                                         self._net_crossings = self._net_crossings[-100:]
                     self._prev_3d = pt
 
-                    # Track per-frame speed for raw buffer
+                    # Track per-frame speed for raw buffer — use median of recent
+                    # samples so a single noisy detection doesn't spike the value
+                    # surfaced to the dashboard / rally_raw_buffer.
                     if self._speed_buffer:
-                        self._last_frame_speed_kmh = float(self._speed_buffer[-1])
+                        self._last_frame_speed_kmh = float(np.median(list(self._speed_buffer)))
 
 
                     cam_dets = {}
@@ -572,8 +583,9 @@ class Orchestrator:
                                         matched_speed = nc["speed_kmh"]
                                         nc["_used"] = True  # consume this crossing
                                         break
-                            self._live_bounces.append(bd)
-                            self._debug_record_bounce(pb)
+                            if not self._is_duplicate_bounce(bd):
+                                self._live_bounces.append(bd)
+                                self._debug_record_bounce(pb)
                             if self._ws_enabled and matched_speed > 0:
                                 bx, by = pb.x, pb.y
                                 self._ws_bounce_queue.append({
@@ -582,6 +594,9 @@ class Orchestrator:
                                     "speed": matched_speed,
                                     "timestamp": int(now * 1000),
                                 })
+                                # Cap to prevent memory leak if WS is slow/disconnected
+                                if len(self._ws_bounce_queue) > 100:
+                                    self._ws_bounce_queue = self._ws_bounce_queue[-100:]
                         if len(self._live_bounces) > 50:
                             self._live_bounces = self._live_bounces[-50:]
                         self._rally_tracker.update(pt, bounce)
@@ -599,7 +614,8 @@ class Orchestrator:
                             if self._latest_net_crossing and (now - self._latest_net_crossing["timestamp"]) < 3.0:
                                 bd["speed_kmh"] = self._latest_net_crossing["speed_kmh"]
                                 bd["speed_direction"] = self._latest_net_crossing["direction"]
-                            self._live_bounces.append(bd)
+                            if not self._is_duplicate_bounce(bd):
+                                self._live_bounces.append(bd)
                         # Append frame to rally raw buffer
                         is_bounce_frame = best_bounce is not None
                         if is_bounce_frame:
@@ -630,12 +646,17 @@ class Orchestrator:
                             self._live_rallies.append(rally_result.to_dict())
                             if len(self._live_rallies) > 20:
                                 self._live_rallies = self._live_rallies[-20:]
-                            # Auto report on rally interval
+                            # Auto report on rally interval — run in thread so report
+                            # generation (disk I/O) doesn't block the consume loop
+                            # while holding _analytics_lock.
                             self._rally_completed_count += 1
                             if (self._rally_report_interval > 0
                                     and self._rally_completed_count - self._last_report_rally_count
                                     >= self._rally_report_interval):
-                                self._auto_generate_report()
+                                threading.Thread(
+                                    target=self._auto_generate_report,
+                                    daemon=True,
+                                ).start()
                             # Snapshot frames now (before deque rolls over) then export async
                             _start_ts = rally_result.start_time
                             _end_ts = rally_result.end_time
@@ -1188,6 +1209,33 @@ class Orchestrator:
                 "enhanced_state": self._rally_sm.get_state_dict(),
                 "enhanced_rallies": self._enrich_rallies(),
             }
+
+    # ------------------------------------------------------------------
+    # Bounce deduplication (PeakBounceDetector and Hybrid/Enhanced fire
+    # independently; filter near-duplicate reports of the same physical event).
+    # ------------------------------------------------------------------
+    _BOUNCE_DEDUP_DT = 0.7    # seconds: detectors can lag each other ~0.5s
+    _BOUNCE_DEDUP_DIST = 1.0  # meters: same physical bounce should be < 1m apart
+
+    def _is_duplicate_bounce(self, bd: dict) -> bool:
+        """True if `bd` looks like a near-duplicate of a recently-recorded bounce."""
+        ts = bd.get("timestamp")
+        if ts is None or not self._live_bounces:
+            return False
+        bx, by = bd.get("x"), bd.get("y")
+        if bx is None or by is None:
+            return False
+        for prev in reversed(self._live_bounces[-5:]):
+            dt = ts - prev.get("timestamp", 0)
+            if dt > self._BOUNCE_DEDUP_DT:
+                break  # older than window; reverse order → no earlier ones matter
+            if dt < 0:
+                continue
+            dx = bx - prev.get("x", 0)
+            dy = by - prev.get("y", 0)
+            if (dx * dx + dy * dy) ** 0.5 < self._BOUNCE_DEDUP_DIST:
+                return True
+        return False
 
     # ------------------------------------------------------------------
     # Debug output for GT comparison
