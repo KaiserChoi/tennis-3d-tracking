@@ -1826,17 +1826,12 @@ async function poll(){
     // Extract analytics data from status
     const analytics=d.analytics||{};
     const recentBounces=analytics.recent_bounces||[];
-    const rallyEndMarkers=analytics.rally_end_markers||[];
     const rallyState=analytics.rally_state||{};
 
     const b=d.latest_ball_3d;
     const latestDets=d.latest_detections||null;
-    // Merge for display: real bounces + synthetic rally-end markers, sorted
-    // by timestamp so last-5 picking picks the latest events chronologically.
-    const minimapEvents=[...recentBounces, ...rallyEndMarkers]
-        .sort((a,b)=>(a.timestamp||0)-(b.timestamp||0));
-    drawCourt(document.getElementById('minimap'),minimapEvents);
-    updateGTStats(recentBounces);  // GT accuracy only counts real bounces
+    drawCourt(document.getElementById('minimap'),recentBounces);
+    updateGTStats(recentBounces);
 
     // Update rally state display
     const stateEl=document.getElementById('rally-state');

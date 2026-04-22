@@ -21,7 +21,6 @@ from app.analytics import (
     BounceDetector,
     HybridBounceDetector,
     PeakBounceDetector,
-    RallyStateMachine,
     RallyTracker,
     run_batch_analytics,
 )
@@ -119,10 +118,16 @@ class Orchestrator:
             max_gap_s=0.6,      # was 0.2 (offline default)
         )
         self._bounce_detector = PeakBounceDetector(batch_size=10)   # eval only
+        # RallyStateMachine (serve rules, PENDING, DOUBLE_FAULT, LET, ...) was
+        # removed from the realtime path — the rule-based state machine never
+        # had GT validation, it was producing confusing transitions under the
+        # noisy realtime 3D stream, and every consumer it used to drive
+        # (rally_end markers, F1 post-filter, _export_rally, auto-report)
+        # was better off re-sourced from the simple RallyTracker or dropped.
+        # The class stays defined in analytics.py for offline tools /
+        # batch analytics (run_batch_analytics, FusionCoordinator).
         self._rally_tracker = RallyTracker()
-        self._rally_sm = RallyStateMachine()
-        self._live_bounces: list[dict] = []         # ONLY real Hybrid bounces
-        self._rally_end_markers: list[dict] = []    # synthetic NET/TIMEOUT/... markers
+        self._live_bounces: list[dict] = []   # real Hybrid bounces only
         self._peak_bounces_eval: list[dict] = []   # sidecar, cap 100
         # Post-filter telemetry — counts per reason (incl. "accepted") so we
         # can tune thresholds from live data without re-running eval.
@@ -672,10 +677,13 @@ class Orchestrator:
                                         consumed_nc["_used"] = False
                                         consumed_nc = None
 
-                        # --- Fan out (every production consumer reads accepted_bounce) ---
+                        # --- Fan out ---
+                        # Legacy RallyTracker gets the bounce (drives the
+                        # simple idle/rally counter exposed via the API).
+                        # rally_result (boundary signal) is no longer produced —
+                        # end-markers, auto-report, and rally export all were
+                        # tied to the removed RallyStateMachine.
                         self._rally_tracker.update(pt, accepted_bounce)
-                        rally_result = self._rally_sm.update(pt, accepted_bounce)
-
                         _tri_bounce = accepted_bounce
 
                         if accepted_bounce is not None:
@@ -691,50 +699,16 @@ class Orchestrator:
                                 })
                                 if len(self._ws_bounce_queue) > 100:
                                     self._ws_bounce_queue = self._ws_bounce_queue[-100:]
-
-                        # --- Rally-end marker ---
-                        # Every rally→idle transition should leave ONE visible
-                        # marker. Two cases:
-                        #  (a) accepted_bd is the rally-ender itself (OUT /
-                        #      DOUBLE_BOUNCE / SERVE_FAULT→DOUBLE_FAULT bounce
-                        #      paths) — tag it in place. Stays in _live_bounces.
-                        #  (b) NET / TIMEOUT / SERVE_NET / SERVE_TIMEOUT paths
-                        #      have no bounce this frame — synthesize a marker
-                        #      in _rally_end_markers (SEPARATE list so dedup
-                        #      and F2 post-filter don't see it as a prior
-                        #      real bounce and block the next real one).
-                        if rally_result is not None:
-                            end_reason = rally_result.end_reason
-                            if accepted_bd is not None:
-                                accepted_bd["end_reason"] = end_reason
-                                accepted_bd["rally_end"] = True
-                            else:
-                                end_marker = {
-                                    "x": round(float(x), 4),
-                                    "y": round(float(y), 4),
-                                    "z": round(float(z), 4),
-                                    "timestamp": round(float(now), 4),
-                                    "capture_ts": round(float(capture_ts), 4),
-                                    "in_court": True,  # semantically n/a
-                                    "frame_index": fi,
-                                    "confidence": 0.0,
-                                    "source_camera": "rally_end",
-                                    "side": "near" if y < self._NET_Y else "far",
-                                    "end_reason": end_reason,
-                                    "rally_end": True,
-                                    "synthetic": True,
-                                    "rally_id": rally_result.rally_id,
-                                }
-                                self._rally_end_markers.append(end_marker)
-                                if len(self._rally_end_markers) > 50:
-                                    self._rally_end_markers = self._rally_end_markers[-50:]
                         if len(self._live_bounces) > 50:
                             self._live_bounces = self._live_bounces[-50:]
-                        # Append frame to rally raw buffer
+
+                        # Rally-raw buffer still accumulates ball+player per
+                        # frame so offline /api/report/generate still has
+                        # data, but there's no longer an automatic rally-end
+                        # trigger that flushes it to the export endpoint.
                         is_bounce_frame = accepted_bounce is not None
                         if is_bounce_frame:
                             self._last_bounce_ts = now
-                        # is_hit: first frame after a bounce where speed rises
                         is_hit_frame = (
                             not is_bounce_frame
                             and now - self._last_bounce_ts < 1.0
@@ -754,36 +728,6 @@ class Orchestrator:
                             "is_bounce": is_bounce_frame,
                             "is_hit": is_hit_frame,
                         })
-
-
-                        if rally_result is not None:
-                            self._live_rallies.append(rally_result.to_dict())
-                            if len(self._live_rallies) > 20:
-                                self._live_rallies = self._live_rallies[-20:]
-                            # Auto report on rally interval — run in thread so report
-                            # generation (disk I/O) doesn't block the consume loop
-                            # while holding _analytics_lock.
-                            self._rally_completed_count += 1
-                            if (self._rally_report_interval > 0
-                                    and self._rally_completed_count - self._last_report_rally_count
-                                    >= self._rally_report_interval):
-                                threading.Thread(
-                                    target=self._auto_generate_report,
-                                    daemon=True,
-                                ).start()
-                            # Snapshot frames now (before deque rolls over) then export async
-                            _start_ts = rally_result.start_time
-                            _end_ts = rally_result.end_time
-                            _frames_snapshot = [
-                                fr for fr in self._rally_raw_buffer
-                                if _start_ts <= fr["ts"] <= _end_ts
-                            ]
-                            print(f"[DEBUG] Rally {rally_result.rally_id} 结束，触发 export，frames={len(_frames_snapshot)}")
-                            threading.Thread(
-                                target=self._export_rally,
-                                args=(rally_result, _frames_snapshot),
-                                daemon=True,
-                            ).start()
 
                     # Write per-frame tracking data (JSONL — always, not just during recording)
                     if self._tracking_file is not None:
@@ -1315,35 +1259,21 @@ class Orchestrator:
     def get_live_analytics(self) -> dict:
         """Return current live bounce/rally state for the dashboard.
 
-        The *primary* rally truth is ``RallyStateMachine`` (it handles serve,
-        OUT, NET, DOUBLE_BOUNCE). ``RallyTracker`` is the legacy simpler
-        tracker (net crossings + timeout only) — exposed under ``legacy_*``
-        for reference / migration, not as canonical output.
-
-        ``recent_bounces`` only contains Hybrid-sourced bounces after the
-        dedup gate. ``peak_bounces_eval`` is a read-only sidecar for
-        comparing PeakBounceDetector against Hybrid; do NOT drive any UI
-        decision off it.
+        Rally tracking is now done by the simple ``RallyTracker`` only —
+        net crossings + timeout, no serve rules, no end-reason classification.
+        RallyStateMachine was removed: the rule-based machine wasn't GT-
+        validated, and its complex output (PENDING / SERVING / DOUBLE_FAULT /
+        LET ...) was noisy on realtime data.
         """
         with self._analytics_lock:
             return {
-                # Primary truth — RallyStateMachine
-                "rally_state": self._rally_sm.get_state_dict(),
-                "completed_rallies": self._enrich_rallies(),
+                "rally_state": self._rally_tracker.get_state().to_dict(),
+                "completed_rallies": self._rally_tracker.get_completed_rallies(),
                 "recent_bounces": list(self._live_bounces[-10:]),
-                # Synthetic rally-end markers for NET/TIMEOUT/SERVE_* paths.
-                # Separate list so dedup/post-filter don't accidentally treat
-                # these as prior real bounces. Dashboard overlays them on the
-                # minimap with a distinct style.
-                "rally_end_markers": list(self._rally_end_markers[-10:]),
                 # Peak sidecar (eval only)
                 "peak_bounces_eval": list(self._peak_bounces_eval[-10:]),
                 # Post-filter telemetry — count per rejection reason plus "accepted".
-                # Tune thresholds from live data by watching these counts.
                 "post_filter_stats": dict(self._post_filter_stats),
-                # Legacy simpler tracker — kept for reference
-                "legacy_rally_state": self._rally_tracker.get_state().to_dict(),
-                "legacy_completed_rallies": self._rally_tracker.get_completed_rallies(),
             }
 
     # ------------------------------------------------------------------
@@ -1381,30 +1311,22 @@ class Orchestrator:
     # and F4 (net-crossing context) are parameterized but disabled by
     # default; flip the toggles below after side-by-side eval.
     # ------------------------------------------------------------------
-    _POSTFILT_MIN_INTERVAL_S = 0.4      # stricter than dedup's 0.7s
+    _POSTFILT_MIN_INTERVAL_S = 0.4      # F2: stricter than dedup's 0.7s
     _POSTFILT_NET_CTX_WINDOW_S = 3.0    # F4: net crossing must be within this
-    _POSTFILT_F1_ENABLED = True         # reject bounces while rally_sm is idle
-    _POSTFILT_F2_ENABLED = True         # min interval to previous accepted
-    _POSTFILT_F3_ENABLED = False        # speed/height continuity (not implemented yet)
-    _POSTFILT_F4_ENABLED = False        # net-crossing context (disabled: too strict for serves)
+    # F1 (rally-state gating) removed with RallyStateMachine — no rally-sm,
+    # no state to gate on. F3 / F4 remain parameterized but off by default.
+    _POSTFILT_F2_ENABLED = True
+    _POSTFILT_F3_ENABLED = False
+    _POSTFILT_F4_ENABLED = False
 
     def _post_filter_bounce(self, bd: dict) -> tuple[bool, str]:
         """Run enabled precision filters on an already-Hybrid-approved,
         non-duplicate bounce. Return (accepted, reason). Reason names are
         stable strings so _post_filter_stats can aggregate them.
         """
-        # F1: rally state — IDLE means nothing interesting can be happening.
-        # rally_sm transitions to SERVING/RALLY on its very first point of
-        # a new session, and Hybrid needs ~17 frames of buffer before it
-        # can fire, so by the time this filter runs the state machine has
-        # long moved past IDLE unless the ball just stopped playing.
-        if self._POSTFILT_F1_ENABLED:
-            try:
-                state = self._rally_sm.get_state_dict().get("state", "idle")
-            except Exception:
-                state = "idle"
-            if state in ("idle", "pending"):
-                return False, "f1_rally_idle"
+        # F1 removed with RallyStateMachine (rally-state gating no longer
+        # available; dead-ball bounces are allowed through and filtered on
+        # the dashboard side if needed).
 
         # F2: minimum interval since last accepted bounce. Tighter than the
         # dedup gate (which only catches near-simultaneous dual reports of
@@ -1734,29 +1656,6 @@ class Orchestrator:
             "capture_ts": src.get("capture_ts", src["timestamp"]),
         }
 
-    def _enrich_rallies(self) -> list[dict]:
-        """Enrich rally results with net crossing speeds for each bounce."""
-        rallies = []
-        for r in self._rally_sm.get_completed_rallies():
-            rd = r.to_dict()
-            # Attach speed_kmh to each bounce by finding the nearest net crossing
-            for b in rd.get("bounces", []):
-                bt = b.get("timestamp", 0)
-                best = None
-                best_dt = 3.0  # max 3 seconds lookback
-                for nc in self._net_crossings:
-                    dt = bt - nc["timestamp"]
-                    if 0 < dt < best_dt:
-                        best_dt = dt
-                        best = nc
-                if best:
-                    b["speed_kmh"] = best["speed_kmh"]
-                    b["speed_direction"] = best["direction"]
-            # Also add rally-level summary
-            rd["duration"] = rd.get("duration_seconds", 0)
-            rallies.append(rd)
-        return rallies
-
     def reset_live_analytics(self) -> None:
         """Reset every piece of per-session analytics state so the next
         session starts clean. After this returns, the first frames of the
@@ -1768,15 +1667,13 @@ class Orchestrator:
             self._hybrid_bounce.reset()
             self._bounce_detector.reset()
             self._rally_tracker.reset()
-            self._rally_sm.reset()
 
             # Production + sidecar bounce buffers
             self._live_bounces.clear()
-            self._rally_end_markers.clear()
             self._peak_bounces_eval.clear()
             self._post_filter_stats.clear()
 
-            # Rally/live buffers
+            # Rally buffers (kept for offline report/export code paths)
             self._live_rallies.clear()
             self._rally_raw_buffer.clear()
 
