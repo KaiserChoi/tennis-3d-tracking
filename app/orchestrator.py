@@ -85,6 +85,7 @@ class Orchestrator:
         self._recording_info: dict = {}
         self._recording_lock = threading.Lock()
         self._recordings_dir = Path("recordings")
+        self._ffmpeg_lock = threading.Lock()
 
         # Tracking JSONL (always writes when pipeline runs, independent of recording)
         self._tracking_file: Any = None
@@ -94,6 +95,13 @@ class Orchestrator:
         self._jsonl_last_fsync_ts: float = 0.0
         self._recording_tracking_path: str | None = None
         self._last_completed_tracking_path: str | None = None
+        self._ffmpeg_processes: dict[str, dict[str, Any]] = {}
+        self._ffmpeg_start_time: float = 0.0
+        self._ffmpeg_session_dir: str | None = None
+        self._ffmpeg_stop_reason: str | None = None
+        self._ffmpeg_monitor_thread: Optional[threading.Thread] = None
+        self._ffmpeg_stopping: bool = False
+        self._ffmpeg_stop_thread: Optional[threading.Thread] = None
 
         # Video test
         self._video_test_handle: Optional[_PipelineHandle] = None
@@ -394,14 +402,21 @@ class Orchestrator:
                 # 消费最新预览/录像帧
                 if handle.frame_queue is not None:
                     try:
-                        new_jpeg: bytes | None = None
+                        new_payload = None
                         while not handle.frame_queue.empty():
-                            new_jpeg = handle.frame_queue.get_nowait()
-                            self._latest_frames[name] = new_jpeg
-                        if new_jpeg is not None:
+                            new_payload = handle.frame_queue.get_nowait()
+                        if new_payload is not None:
+                            if isinstance(new_payload, dict):
+                                preview_jpeg = new_payload.get("preview")
+                                recording_jpeg = new_payload.get("recording")
+                            else:
+                                preview_jpeg = new_payload
+                                recording_jpeg = new_payload if self._recording else None
+                            if preview_jpeg is not None:
+                                self._latest_frames[name] = preview_jpeg
                             with self._recording_lock:
-                                if self._recording:
-                                    self._write_recording_frame(name, new_jpeg)
+                                if self._recording and recording_jpeg is not None:
+                                    self._write_recording_frame(name, recording_jpeg)
                     except Exception:
                         pass
 
@@ -902,16 +917,31 @@ class Orchestrator:
         return str(jsonls[0]) if jsonls else None
 
     def get_recording_status(self) -> dict:
-        if not self._recording:
-            ffmpeg_active = bool(self._ffmpeg_processes)
-            if ffmpeg_active:
-                elapsed = time.time() - self._ffmpeg_start_time
+        import shutil
+
+        with self._ffmpeg_lock:
+            if self._ffmpeg_processes or self._ffmpeg_stopping:
+                files, segments = self._collect_ffmpeg_segment_snapshot_locked()
+                elapsed = time.time() - self._ffmpeg_start_time if self._ffmpeg_start_time else 0.0
+                try:
+                    free_disk_gb = round(
+                        shutil.disk_usage(self._recordings_dir).free / (1024 ** 3), 2
+                    )
+                except Exception:
+                    free_disk_gb = None
                 return {
                     "recording": True,
                     "mode": "ffmpeg",
                     "duration_s": round(elapsed, 1),
-                    "files": {n: p["path"] for n, p in self._ffmpeg_processes.items()},
+                    "files": files,
+                    "session_dir": self._ffmpeg_session_dir,
+                    "segment_seconds": self._FFMPEG_SEGMENT_SECONDS,
+                    "segment_counts": {name: len(paths) for name, paths in segments.items()},
+                    "free_disk_gb": free_disk_gb,
+                    "stopping": self._ffmpeg_stopping,
+                    "stop_reason": self._ffmpeg_stop_reason,
                 }
+        if not self._recording:
             return {"recording": False}
         elapsed = time.time() - self._recording_info.get("start_time", time.time())
         return {
@@ -922,102 +952,238 @@ class Orchestrator:
         }
 
     # ------------------------------------------------------------------
-    # FFmpeg Recording with Audio (alternative to OpenCV recording)
+    # FFmpeg segmented recording with audio (safer for long sessions)
     # ------------------------------------------------------------------
-    _ffmpeg_processes: dict = {}
-    _ffmpeg_start_time: float = 0
+    _FFMPEG_SEGMENT_SECONDS = 600
+    _FFMPEG_MIN_FREE_BYTES = 5 * 1024 * 1024 * 1024
+    _FFMPEG_MONITOR_INTERVAL_S = 10.0
 
-    def start_recording_ffmpeg(self) -> dict:
-        """Start recording with ffmpeg (video + audio from RTSP).
-
-        Uses ffmpeg subprocess to directly capture RTSP streams including
-        audio tracks. This preserves the original stream quality and
-        includes microphone audio for frame alignment.
-
-        Does NOT interfere with the existing OpenCV recording method.
-        """
-        import subprocess, shutil
-
-        if self._ffmpeg_processes:
-            return {"status": "already_recording_ffmpeg",
-                    "files": {n: p["path"] for n, p in self._ffmpeg_processes.items()}}
-
-        ffmpeg_bin = shutil.which("ffmpeg")
-        if not ffmpeg_bin:
-            return {"status": "error", "message": "ffmpeg not found in PATH"}
-
-        self._recordings_dir.mkdir(parents=True, exist_ok=True)
-        ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        files = {}
-
-        for name, cam_cfg in self._config.cameras.items():
-            rtsp_url = cam_cfg.rtsp_url
-            if not rtsp_url:
-                continue
-
-            out_path = str(self._recordings_dir / f"{name}_{ts}_av.mp4")
-
-            # ffmpeg command:
-            # -rtsp_transport tcp: use TCP for reliable RTSP
-            # -i: input RTSP stream
-            # -c:v copy: copy video stream without re-encoding (fast, lossless)
-            # -c:a aac: encode audio to AAC (RTSP usually sends PCM/G711)
-            # -y: overwrite output
-            cmd = [
-                ffmpeg_bin,
-                "-rtsp_transport", "tcp",
-                "-i", rtsp_url,
-                "-c:v", "copy",
-                "-c:a", "aac",
-                "-y",
-                out_path,
-            ]
-
-            try:
-                proc = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.PIPE,
-                )
-                self._ffmpeg_processes[name] = {"proc": proc, "path": out_path}
-                files[name] = out_path
-                logger.info("[%s] ffmpeg recording started: %s", name, out_path)
-            except Exception as e:
-                logger.error("[%s] ffmpeg failed to start: %s", name, e)
-
-        if not files:
-            return {"status": "error", "message": "no cameras started"}
-
-        self._ffmpeg_start_time = time.time()
-        return {"status": "recording_ffmpeg", "files": files}
-
-    def stop_recording_ffmpeg(self) -> dict:
-        """Stop ffmpeg recording by sending 'q' to stdin or SIGINT."""
-        import signal
-
-        if not self._ffmpeg_processes:
-            return {"status": "not_recording_ffmpeg"}
-
-        files = {}
-        elapsed = time.time() - self._ffmpeg_start_time
-
+    def _collect_ffmpeg_segment_snapshot_locked(self) -> tuple[dict[str, str], dict[str, list[str]]]:
+        files: dict[str, str] = {}
+        segments: dict[str, list[str]] = {}
         for name, info in self._ffmpeg_processes.items():
+            session_dir = Path(info["session_dir"])
+            paths = sorted(session_dir.glob(f"{name}_*.mkv"))
+            str_paths = [str(p) for p in paths]
+            segments[name] = str_paths
+            files[name] = str_paths[-1] if str_paths else info["pattern"]
+        return files, segments
+
+    def _monitor_ffmpeg_recording(self) -> None:
+        import shutil
+
+        while not self._stopped.is_set():
+            with self._ffmpeg_lock:
+                if not self._ffmpeg_processes:
+                    return
+                if self._ffmpeg_stopping:
+                    return
+                procs = [(name, info["proc"]) for name, info in self._ffmpeg_processes.items()]
+            try:
+                free_bytes = shutil.disk_usage(self._recordings_dir).free
+            except Exception:
+                free_bytes = None
+            if free_bytes is not None and free_bytes < self._FFMPEG_MIN_FREE_BYTES:
+                free_gb = free_bytes / (1024 ** 3)
+                logger.warning(
+                    "Stopping ffmpeg recording due to low disk space: %.2f GB free",
+                    free_gb,
+                )
+                self.stop_recording_ffmpeg(reason="low_disk")
+                return
+            for name, proc in procs:
+                ret = proc.poll()
+                if ret is not None:
+                    logger.warning("[%s] ffmpeg exited unexpectedly with code %s", name, ret)
+                    self.stop_recording_ffmpeg(reason=f"ffmpeg_exit:{name}:{ret}")
+                    return
+            time.sleep(self._FFMPEG_MONITOR_INTERVAL_S)
+
+    def _stop_recording_ffmpeg_worker(self, reason: str) -> None:
+        with self._ffmpeg_lock:
+            process_items = list(self._ffmpeg_processes.items())
+            elapsed = time.time() - self._ffmpeg_start_time if self._ffmpeg_start_time else 0.0
+
+        for name, info in process_items:
             proc = info["proc"]
             try:
-                # Send SIGINT (graceful stop, ffmpeg finalizes the file)
-                proc.send_signal(signal.SIGINT)
+                if proc.stdin is not None:
+                    proc.stdin.write(b"q\n")
+                    proc.stdin.flush()
                 proc.wait(timeout=10)
             except Exception:
-                proc.kill()
-            files[name] = info["path"]
-            logger.info("[%s] ffmpeg recording stopped: %s", name, info["path"])
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=5)
+                except Exception:
+                    proc.kill()
+            finally:
+                try:
+                    if proc.stdin is not None:
+                        proc.stdin.close()
+                except Exception:
+                    pass
+                log_handle = info.get("log_handle")
+                if log_handle is not None:
+                    try:
+                        log_handle.flush()
+                        log_handle.close()
+                    except Exception:
+                        pass
 
-        self._ffmpeg_processes.clear()
-        return {
-            "status": "stopped_ffmpeg",
-            "files": files,
-            "duration_s": round(elapsed, 1),
-        }
+        with self._ffmpeg_lock:
+            files, _segments = self._collect_ffmpeg_segment_snapshot_locked()
+            self._ffmpeg_processes.clear()
+            self._ffmpeg_start_time = 0.0
+            self._ffmpeg_session_dir = None
+            self._ffmpeg_stopping = False
+            self._ffmpeg_stop_thread = None
+
+        for name, latest_path in files.items():
+            logger.info("[%s] ffmpeg recording stopped: %s", name, latest_path)
+        logger.info("FFmpeg recording stop complete (reason=%s, duration=%.1fs)", reason, elapsed)
+
+    def start_recording_ffmpeg(self) -> dict:
+        """Start segmented ffmpeg recording (video + optional audio) from RTSP.
+
+        This path is intended for long sessions: ffmpeg writes directly to disk,
+        rotates every N minutes, and each completed segment is independently
+        playable. That makes it much safer than a single giant MP4 if the
+        process crashes or the machine runs out of disk.
+        """
+        import shutil
+        import subprocess
+
+        with self._ffmpeg_lock:
+            if self._ffmpeg_processes:
+                files, _segments = self._collect_ffmpeg_segment_snapshot_locked()
+                return {"status": "already_recording_ffmpeg", "files": files}
+            if self._ffmpeg_stopping:
+                return {"status": "stopping_ffmpeg"}
+
+            ffmpeg_bin = shutil.which("ffmpeg")
+            if not ffmpeg_bin:
+                return {"status": "error", "message": "ffmpeg not found in PATH"}
+
+            self._recordings_dir.mkdir(parents=True, exist_ok=True)
+            ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            session_dir = self._recordings_dir / f"ffmpeg_{ts}"
+            session_dir.mkdir(parents=True, exist_ok=True)
+            files: dict[str, str] = {}
+            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+            for name, cam_cfg in self.config.cameras.items():
+                rtsp_url = cam_cfg.rtsp_url
+                if not rtsp_url:
+                    continue
+
+                out_pattern = str(session_dir / f"{name}_%Y%m%d_%H%M%S.mkv")
+                log_path = session_dir / f"{name}_ffmpeg.log"
+                try:
+                    log_handle = open(log_path, "a", encoding="utf-8", buffering=1)
+                except Exception as e:
+                    logger.error("[%s] Failed to open ffmpeg log file: %s", name, e)
+                    continue
+
+                cmd = [
+                    ffmpeg_bin,
+                    "-hide_banner",
+                    "-loglevel", "warning",
+                    "-rtsp_transport", "tcp",
+                    "-i", rtsp_url,
+                    "-map", "0:v:0",
+                    "-map", "0:a?",
+                    "-c:v", "copy",
+                    "-c:a", "aac",
+                    "-f", "segment",
+                    "-segment_time", str(self._FFMPEG_SEGMENT_SECONDS),
+                    "-reset_timestamps", "1",
+                    "-strftime", "1",
+                    "-segment_format", "matroska",
+                    out_pattern,
+                ]
+
+                try:
+                    proc = subprocess.Popen(
+                        cmd,
+                        stdin=subprocess.PIPE,
+                        stdout=subprocess.DEVNULL,
+                        stderr=log_handle,
+                        creationflags=creationflags,
+                    )
+                    self._ffmpeg_processes[name] = {
+                        "proc": proc,
+                        "pattern": out_pattern,
+                        "session_dir": str(session_dir),
+                        "log_path": str(log_path),
+                        "log_handle": log_handle,
+                    }
+                    files[name] = out_pattern
+                    logger.info("[%s] ffmpeg segmented recording started: %s", name, out_pattern)
+                except Exception as e:
+                    logger.error("[%s] ffmpeg failed to start: %s", name, e)
+                    try:
+                        log_handle.close()
+                    except Exception:
+                        pass
+
+            if not files:
+                return {"status": "error", "message": "no cameras started"}
+
+            self._ffmpeg_start_time = time.time()
+            self._ffmpeg_session_dir = str(session_dir)
+            self._ffmpeg_stop_reason = None
+            self._ffmpeg_stopping = False
+            if self._ffmpeg_monitor_thread is None or not self._ffmpeg_monitor_thread.is_alive():
+                self._ffmpeg_monitor_thread = threading.Thread(
+                    target=self._monitor_ffmpeg_recording,
+                    daemon=True,
+                    name="ffmpeg-recording-monitor",
+                )
+                self._ffmpeg_monitor_thread.start()
+            return {
+                "status": "recording_ffmpeg",
+                "files": files,
+                "session_dir": str(session_dir),
+                "segment_seconds": self._FFMPEG_SEGMENT_SECONDS,
+            }
+
+    def stop_recording_ffmpeg(self, reason: str = "manual") -> dict:
+        """Stop segmented ffmpeg recording and finalize current segment."""
+        with self._ffmpeg_lock:
+            if not self._ffmpeg_processes:
+                return {"status": "not_recording_ffmpeg"}
+            if self._ffmpeg_stopping:
+                files, _segments = self._collect_ffmpeg_segment_snapshot_locked()
+                elapsed = time.time() - self._ffmpeg_start_time if self._ffmpeg_start_time else 0.0
+                return {
+                    "status": "stopping_ffmpeg",
+                    "files": files,
+                    "duration_s": round(elapsed, 1),
+                    "stop_reason": self._ffmpeg_stop_reason or reason,
+                }
+
+            self._ffmpeg_stop_reason = reason
+            self._ffmpeg_stopping = True
+            elapsed = time.time() - self._ffmpeg_start_time if self._ffmpeg_start_time else 0.0
+            files, segments = self._collect_ffmpeg_segment_snapshot_locked()
+            session_dir = self._ffmpeg_session_dir
+            self._ffmpeg_stop_thread = threading.Thread(
+                target=self._stop_recording_ffmpeg_worker,
+                args=(reason,),
+                daemon=True,
+                name="ffmpeg-recording-stop",
+            )
+            self._ffmpeg_stop_thread.start()
+
+            return {
+                "status": "stopping_ffmpeg",
+                "files": files,
+                "segments": segments,
+                "session_dir": session_dir,
+                "duration_s": round(elapsed, 1),
+                "stop_reason": reason,
+            }
 
     def _write_recording_frame(self, name: str, jpeg: bytes) -> None:
         """解码 JPEG 并写入对应 VideoWriter，基于时间戳补帧保证 25fps。"""

@@ -33,6 +33,25 @@ logger = logging.getLogger("main")
 logger.info("Log file: %s", _log_file)
 
 
+class _AccessNoiseFilter(logging.Filter):
+    """Suppress very chatty dashboard polling from uvicorn access logs."""
+
+    _suppressed_fragments = (
+        '"GET /api/status HTTP/1.1" 200',
+        '"GET /api/recording/status HTTP/1.1" 200',
+    )
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            msg = record.getMessage()
+        except Exception:
+            return True
+        return not any(fragment in msg for fragment in self._suppressed_fragments)
+
+
+logging.getLogger("uvicorn.access").addFilter(_AccessNoiseFilter())
+
+
 def create_app() -> FastAPI:
     config = load_config("config.yaml")
     orch = Orchestrator(config)

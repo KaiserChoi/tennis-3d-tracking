@@ -104,6 +104,18 @@ def run_pipeline(
         import threading, queue as _queue
         _jpeg_q: _queue.Queue = _queue.Queue(maxsize=2)
 
+        def _push_latest_frame_payload(payload: dict) -> None:
+            """Keep only the freshest preview/recording payload in frame_queue."""
+            try:
+                while not frame_queue.empty():
+                    try:
+                        frame_queue.get_nowait()
+                    except Exception:
+                        break
+                frame_queue.put_nowait(payload)
+            except Exception:
+                pass
+
         def _jpeg_worker():
             while not stop_event.is_set():
                 try:
@@ -115,22 +127,19 @@ def run_pipeline(
                 raw_frame, is_rec = item
                 try:
                     h, w = raw_frame.shape[:2]
+                    preview = cv2.resize(raw_frame, (960, int(h * 960 / w))) if w > 960 else raw_frame
+                    _, preview_jpeg = cv2.imencode(".jpg", preview, [cv2.IMWRITE_JPEG_QUALITY, 75])
                     if is_rec:
-                        _, jpeg = cv2.imencode(".jpg", raw_frame, [cv2.IMWRITE_JPEG_QUALITY, 95])
-                        try:
-                            frame_queue.put(jpeg.tobytes(), timeout=0.5)
-                        except Exception:
-                            pass
+                        _, recording_jpeg = cv2.imencode(".jpg", raw_frame, [cv2.IMWRITE_JPEG_QUALITY, 92])
+                        _push_latest_frame_payload({
+                            "preview": preview_jpeg.tobytes(),
+                            "recording": recording_jpeg.tobytes(),
+                        })
                     else:
-                        preview = cv2.resize(raw_frame, (960, int(h * 960 / w))) if w > 960 else raw_frame
-                        _, jpeg = cv2.imencode(".jpg", preview, [cv2.IMWRITE_JPEG_QUALITY, 75])
-                        # Replace latest preview (non-blocking)
-                        while not frame_queue.empty():
-                            try:
-                                frame_queue.get_nowait()
-                            except Exception:
-                                break
-                        frame_queue.put_nowait(jpeg.tobytes())
+                        _push_latest_frame_payload({
+                            "preview": preview_jpeg.tobytes(),
+                            "recording": None,
+                        })
                 except Exception:
                     pass
 

@@ -15,6 +15,7 @@ and also work in batch mode by feeding points sequentially.
 
 import logging
 import time
+import warnings
 from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
@@ -23,6 +24,11 @@ from typing import Optional
 import numpy as np
 
 logger = logging.getLogger(__name__)
+
+try:
+    _NP_RANK_WARNING = np.exceptions.RankWarning
+except AttributeError:
+    _NP_RANK_WARNING = np.RankWarning
 
 # Court dimensions (meters) — V2 coord system: origin at court center, net at y=0
 # ITF singles court (project uses singles only — see memory/calibration_issue.md)
@@ -958,12 +964,30 @@ class HybridBounceDetector:
             def _fit_res(indices):
                 if len(indices) < 3:
                     return float("inf")
-                t = (ts[indices] - ts[indices[0]])
-                z = zs[indices]
+                t = np.asarray(ts[indices] - ts[indices[0]], dtype=float)
+                z = np.asarray(zs[indices], dtype=float)
+                if not np.isfinite(t).all() or not np.isfinite(z).all():
+                    return float("inf")
+                # Quadratic fit needs at least 3 distinct x values. Duplicate or
+                # near-identical timestamps are common in the live stream when
+                # pairing/smoothing reuses the same capture_ts, and they trigger
+                # RankWarning / LAPACK noise inside polyfit.
+                if np.unique(np.round(t, 6)).size < 3:
+                    return float("inf")
+                t_span = float(np.ptp(t))
+                if t_span <= 1e-6:
+                    return float("inf")
+                # Center/scale time to improve conditioning of the quadratic fit.
+                t_fit = (t - float(np.mean(t))) / t_span
                 try:
-                    c = np.polyfit(t, z, 2)
-                    return float(np.mean((z - np.polyval(c, t)) ** 2))
-                except (np.linalg.LinAlgError, ValueError):
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("error", _NP_RANK_WARNING)
+                        c = np.polyfit(t_fit, z, 2)
+                    resid = z - np.polyval(c, t_fit)
+                    if not np.isfinite(resid).all():
+                        return float("inf")
+                    return float(np.mean(resid ** 2))
+                except (np.linalg.LinAlgError, ValueError, FloatingPointError, RuntimeWarning, Warning):
                     return float("inf")
 
             rl = _fit_res(np.array(li))

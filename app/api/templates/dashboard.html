@@ -475,7 +475,6 @@ body{font-family:'Lato',sans-serif;background:var(--bg);color:var(--text);height
           <div class="section-title">Function</div>
           <div class="func-list">
             <div class="func-item"><span>Track</span><div class="toggle on" id="tog-track" onclick="toggleTrackBall(this)"></div></div>
-            <div class="func-item"><span>Record</span><div class="toggle" id="tog-record" onclick="toggleRecordToggle(this)"></div></div>
             <div class="func-item"><span>ML Rally</span><div class="toggle" id="tog-ml-rally" onclick="toggleMLRally(this)"></div></div>
             <div class="func-item"><span>Bounce Det.</span><div class="toggle on" id="tog-bounce" onclick="toggleBounce(this)"></div></div>
             <div class="func-item"><span>Net Speed</span><div class="toggle on" id="tog-net-crossing" onclick="toggleNetCrossing(this)"></div></div>
@@ -548,7 +547,7 @@ body{font-family:'Lato',sans-serif;background:var(--bg);color:var(--text);height
               <span class="rec-dot"></span>
               <span class="rec-text">REC</span>
             </button>
-            <button id="rec-av-btn" class="rec-btn" onclick="toggleRecordingAV()" title="录制视频+音频（用于帧对齐）" style="margin-left:4px">
+            <button id="rec-av-btn" class="rec-btn" onclick="toggleRecordingAV()" title="长时间分段录制（视频+音频，更稳）" style="margin-left:4px">
               <span class="rec-dot"></span>
               <span class="rec-text">REC+🎤</span>
             </button>
@@ -1708,17 +1707,6 @@ async function toggle3DPush(el){
   }
 }
 
-function toggleRecordToggle(el){
-  // This delegates to the existing recording toggle
-  if(!el.classList.contains('on')){
-    el.classList.add('on');
-    if(!_recording) toggleRecording();
-  } else {
-    el.classList.remove('on');
-    if(_recording) toggleRecording();
-  }
-}
-
 // ---- Recording ----
 let _recording=false,_recStartTime=null,_recTimer=null;
 
@@ -1738,19 +1726,27 @@ function _setRecordingUI(active,durationS=0){
   }
 }
 
-function _setRecordingAVUI(active,durationS=0){
+function _setRecordingAVUI(active,durationS=0,stopping=false){
   const btn=document.getElementById('rec-av-btn');
   const txt=btn?.querySelector('.rec-text');
   _recordingAV=!!active;
+  _recordingAVStopping=!!stopping;
+  if(btn) btn.disabled=!!stopping;
   if(_recordingAV){
     _recAVStartTime=Date.now()-Math.max(0,Math.round(durationS*1000));
     btn?.classList.add('recording');
-    if(!_recAVTimer) _recAVTimer=setInterval(_updateRecAVDuration,1000);
-    _updateRecAVDuration();
+    if(_recordingAVStopping){
+      clearInterval(_recAVTimer);_recAVTimer=null;
+      if(txt) txt.textContent='STOP...';
+    } else {
+      if(!_recAVTimer) _recAVTimer=setInterval(_updateRecAVDuration,1000);
+      _updateRecAVDuration();
+    }
   } else {
     clearInterval(_recAVTimer);_recAVTimer=null;_recAVStartTime=null;
     btn?.classList.remove('recording');
-    if(txt) txt.textContent='REC+AV';
+    if(btn) btn.disabled=false;
+    if(txt) txt.textContent='REC+🎤';
   }
 }
 
@@ -1762,7 +1758,7 @@ async function syncRecordingStatus(){
     const mode=data.mode||'';
     const duration=data.duration_s||0;
     _setRecordingUI(active&&mode==='opencv',duration);
-    _setRecordingAVUI(active&&mode==='ffmpeg',duration);
+    _setRecordingAVUI(active&&mode==='ffmpeg',duration,!!data.stopping);
   }catch(e){console.warn('syncRecordingStatus:',e)}
 }
 
@@ -1804,33 +1800,37 @@ function _updateRecDuration(){
 }
 
 // ---- FFmpeg Recording (video + audio) ----
-let _recordingAV=false,_recAVStartTime=null,_recAVTimer=null;
+let _recordingAV=false,_recordingAVStopping=false,_recAVStartTime=null,_recAVTimer=null;
 
 async function toggleRecordingAV(){
   const btn=document.getElementById('rec-av-btn');
   const txt=btn.querySelector('.rec-text');
+  if(_recordingAVStopping) return;
   if(!_recordingAV){
     try{
       const r=await fetch('/api/recording/ffmpeg/start',{method:'POST'});
       const data=await r.json();
       if(data.status==='recording_ffmpeg'){
         _setRecordingAVUI(true,0);
+      } else if(data.status==='stopping_ffmpeg'){
+        _setRecordingAVUI(true,data.duration_s||0,true);
       } else {
         console.warn('FFmpeg recording:',data.status,data.message||'');
         txt.textContent=data.message||data.status;
-        setTimeout(()=>{txt.textContent='REC+🎤'},2000);
+        setTimeout(()=>{txt.textContent='REC+AV'},2000);
       }
     }catch(e){console.error('FFmpeg recording start failed:',e)}
   } else {
     try{
       const r=await fetch('/api/recording/ffmpeg/stop',{method:'POST'});
       const data=await r.json();
-      _setRecordingAVUI(false,0);
-      clearInterval(_recAVTimer);_recAVTimer=null;_recAVStartTime=null;
-      btn.classList.remove('recording');
-      txt.textContent='REC+🎤';
-      if(data.files){
-        const names=Object.entries(data.files).map(([cam,f])=>cam+': '+f.split(/[\\/]/).pop()).join('\n');
+      if(data.status==='stopping_ffmpeg'){
+        _setRecordingAVUI(true,data.duration_s||0,true);
+      } else {
+        _setRecordingAVUI(false,0,false);
+      }
+      if(data.files && data.status!=='stopping_ffmpeg'){
+        const names=Object.entries(data.files).map(([cam,f])=>cam+': '+f.split(/[\/]/).pop()).join('\n');
         console.log('Saved AV recordings:\n'+names);
       }
     }catch(e){console.error('FFmpeg recording stop failed:',e)}
@@ -1838,11 +1838,11 @@ async function toggleRecordingAV(){
 }
 
 function _updateRecAVDuration(){
-  if(!_recAVStartTime)return;
+  if(!_recAVStartTime||_recordingAVStopping)return;
   const s=Math.floor((Date.now()-_recAVStartTime)/1000);
   const m=String(Math.floor(s/60)).padStart(2,'0'),ss=String(s%60).padStart(2,'0');
   const txt=document.getElementById('rec-av-btn').querySelector('.rec-text');
-  if(txt)txt.textContent='🎤'+m+':'+ss;
+  if(txt)txt.textContent='AV '+m+':'+ss;
 }
 
 async function poll(){
