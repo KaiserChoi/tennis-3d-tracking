@@ -1722,6 +1722,50 @@ function toggleRecordToggle(el){
 // ---- Recording ----
 let _recording=false,_recStartTime=null,_recTimer=null;
 
+function _setRecordingUI(active,durationS=0){
+  const btn=document.getElementById('rec-btn');
+  const txt=btn?.querySelector('.rec-text');
+  _recording=!!active;
+  if(_recording){
+    _recStartTime=Date.now()-Math.max(0,Math.round(durationS*1000));
+    btn?.classList.add('recording');
+    if(!_recTimer) _recTimer=setInterval(_updateRecDuration,1000);
+    _updateRecDuration();
+  } else {
+    clearInterval(_recTimer);_recTimer=null;_recStartTime=null;
+    btn?.classList.remove('recording');
+    if(txt) txt.textContent='REC';
+  }
+}
+
+function _setRecordingAVUI(active,durationS=0){
+  const btn=document.getElementById('rec-av-btn');
+  const txt=btn?.querySelector('.rec-text');
+  _recordingAV=!!active;
+  if(_recordingAV){
+    _recAVStartTime=Date.now()-Math.max(0,Math.round(durationS*1000));
+    btn?.classList.add('recording');
+    if(!_recAVTimer) _recAVTimer=setInterval(_updateRecAVDuration,1000);
+    _updateRecAVDuration();
+  } else {
+    clearInterval(_recAVTimer);_recAVTimer=null;_recAVStartTime=null;
+    btn?.classList.remove('recording');
+    if(txt) txt.textContent='REC+AV';
+  }
+}
+
+async function syncRecordingStatus(){
+  try{
+    const r=await fetch('/api/recording/status');
+    const data=await r.json();
+    const active=!!data.recording;
+    const mode=data.mode||'';
+    const duration=data.duration_s||0;
+    _setRecordingUI(active&&mode==='opencv',duration);
+    _setRecordingAVUI(active&&mode==='ffmpeg',duration);
+  }catch(e){console.warn('syncRecordingStatus:',e)}
+}
+
 async function toggleRecording(){
   const btn=document.getElementById('rec-btn');
   const dot=btn.querySelector('.rec-dot');
@@ -1731,10 +1775,7 @@ async function toggleRecording(){
       const r=await fetch('/api/recording/start',{method:'POST'});
       const data=await r.json();
       if(data.status==='recording'){
-        _recording=true;_recStartTime=Date.now();
-        btn.classList.add('recording');
-        _recTimer=setInterval(_updateRecDuration,1000);
-        _updateRecDuration();
+        _setRecordingUI(true,0);
       } else {
         console.warn('Recording start:',data.status);
         txt.textContent=data.status==='no_cameras_running'?'NO CAM':'REC';
@@ -1745,10 +1786,7 @@ async function toggleRecording(){
     try{
       const r=await fetch('/api/recording/stop',{method:'POST'});
       const data=await r.json();
-      _recording=false;
-      clearInterval(_recTimer);_recTimer=null;_recStartTime=null;
-      btn.classList.remove('recording');
-      txt.textContent='REC';
+      _setRecordingUI(false,0);
       if(data.files){
         const names=Object.entries(data.files).map(([cam,f])=>cam+': '+f.split(/[\\/]/).pop()).join('\n');
         console.log('Saved recordings:\n'+names);
@@ -1776,10 +1814,7 @@ async function toggleRecordingAV(){
       const r=await fetch('/api/recording/ffmpeg/start',{method:'POST'});
       const data=await r.json();
       if(data.status==='recording_ffmpeg'){
-        _recordingAV=true;_recAVStartTime=Date.now();
-        btn.classList.add('recording');
-        _recAVTimer=setInterval(_updateRecAVDuration,1000);
-        _updateRecAVDuration();
+        _setRecordingAVUI(true,0);
       } else {
         console.warn('FFmpeg recording:',data.status,data.message||'');
         txt.textContent=data.message||data.status;
@@ -1790,7 +1825,7 @@ async function toggleRecordingAV(){
     try{
       const r=await fetch('/api/recording/ffmpeg/stop',{method:'POST'});
       const data=await r.json();
-      _recordingAV=false;
+      _setRecordingAVUI(false,0);
       clearInterval(_recAVTimer);_recAVTimer=null;_recAVStartTime=null;
       btn.classList.remove('recording');
       txt.textContent='REC+🎤';
@@ -1850,6 +1885,8 @@ async function poll(){
 // Init
 drawCourt(document.getElementById('minimap'),[]);
 setInterval(poll,500);
+syncRecordingStatus();
+setInterval(syncRecordingStatus,2000);
 
 // Sync toggle states from server on load
 (async function syncToggles(){

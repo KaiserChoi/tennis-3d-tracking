@@ -4,6 +4,7 @@ import datetime
 import json
 import logging
 import multiprocessing as mp
+import os
 import threading
 import time
 from pathlib import Path
@@ -89,8 +90,10 @@ class Orchestrator:
         self._tracking_file: Any = None
         self._tracking_file_path: str | None = None
         self._data_frame_counter: int = 0
-        # Legacy alias for recording-specific data file
-        self._data_file: Any = None
+        self._jsonl_lock = threading.Lock()
+        self._jsonl_last_fsync_ts: float = 0.0
+        self._recording_tracking_path: str | None = None
+        self._last_completed_tracking_path: str | None = None
 
         # Video test
         self._video_test_handle: Optional[_PipelineHandle] = None
@@ -322,19 +325,15 @@ class Orchestrator:
         logger.info("Consumer thread started")
         self._triangulation_active = True
 
-        # Always write tracking JSONL (independent of recording)
-        if self._tracking_file is None:
-            import datetime as _dt
-            ts = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-            self._recordings_dir.mkdir(parents=True, exist_ok=True)
-            tracking_path = str(self._recordings_dir / f"tracking_{ts}.jsonl")
-            try:
-                self._tracking_file = open(tracking_path, "w", encoding="utf-8")
-                self._tracking_file_path = tracking_path
-                self._data_frame_counter = 0
-                logger.info("Tracking JSONL started: %s", tracking_path)
-            except Exception as e:
-                logger.warning("Failed to open tracking file: %s", e)
+        # Always keep one active tracking JSONL open while the consumer runs.
+        with self._jsonl_lock:
+            if self._tracking_file is None:
+                tracking_path = self._make_tracking_jsonl_path(label="bg")
+                try:
+                    self._open_tracking_file_locked(tracking_path, reset_counter=True)
+                    logger.info("Tracking JSONL started: %s", tracking_path)
+                except Exception as e:
+                    logger.warning("Failed to open tracking file: %s", e)
 
         # Only cameras with position_3d can do triangulation
         cam_positions = self._get_camera_positions()
@@ -399,8 +398,10 @@ class Orchestrator:
                         while not handle.frame_queue.empty():
                             new_jpeg = handle.frame_queue.get_nowait()
                             self._latest_frames[name] = new_jpeg
-                        if new_jpeg is not None and self._recording:
-                            self._write_recording_frame(name, new_jpeg)
+                        if new_jpeg is not None:
+                            with self._recording_lock:
+                                if self._recording:
+                                    self._write_recording_frame(name, new_jpeg)
                     except Exception:
                         pass
 
@@ -735,14 +736,12 @@ class Orchestrator:
 
         self._triangulation_active = False
         # Close tracking JSONL
-        if self._tracking_file is not None:
-            try:
-                self._tracking_file.close()
-            except Exception:
-                pass
-            logger.info("Tracking JSONL closed: %s (%d frames)",
-                        self._tracking_file_path, self._data_frame_counter)
-            self._tracking_file = None
+        with self._jsonl_lock:
+            if self._tracking_file is not None:
+                current_path = self._tracking_file_path
+                self._close_tracking_file_locked(force_fsync=True)
+                logger.info("Tracking JSONL closed: %s (%d frames)",
+                            current_path, self._data_frame_counter)
         logger.info("Consumer thread stopped")
 
     # ------------------------------------------------------------------
@@ -775,15 +774,19 @@ class Orchestrator:
                 if handle.status_dict is not None:
                     handle.status_dict["recording_enabled"] = True
             self._recording = True
+            # Rotate the single active tracking JSONL onto a recording-scoped
+            # file so the dashboard path matches the file that is actually
+            # receiving writes.
+            data_path = self._make_tracking_jsonl_path(ts=ts, label="rec")
+            with self._jsonl_lock:
+                try:
+                    self._rotate_tracking_file_locked(data_path, reset_counter=True)
+                    self._recording_tracking_path = data_path
+                    files["tracking_data"] = data_path
+                except Exception as e:
+                    logger.warning("Failed to rotate tracking data file: %s", e)
+                    files["tracking_data"] = self._tracking_file_path
             self._recording_info = {"start_time": rec_start, "files": files}
-            # Open JSONL data file for per-frame tracking data
-            data_path = str(self._recordings_dir / f"tracking_{ts}.jsonl")
-            try:
-                self._data_file = open(data_path, "w", encoding="utf-8")
-                self._data_frame_counter = 0
-                files["tracking_data"] = data_path
-            except Exception as e:
-                logger.warning("Failed to open tracking data file: %s", e)
             logger.info("Recording started: %s", files)
             return {"status": "recording", "files": files}
 
@@ -816,14 +819,26 @@ class Orchestrator:
                     writer.release()
                 files[name] = wr_info["path"]
             self._recording_writers.clear()
-            # Close tracking data file
-            if self._data_file is not None:
-                try:
-                    self._data_file.close()
-                    logger.info("Tracking data saved: %d frames", self._data_frame_counter)
-                except Exception:
-                    pass
-                self._data_file = None
+            # Seal the recording JSONL, then rotate back to a fresh
+            # background file so later live traffic does not append into the
+            # finished recording session.
+            with self._jsonl_lock:
+                finished_tracking = self._recording_tracking_path or self._tracking_file_path
+                self._flush_tracking_file_locked(force_fsync=True)
+                if finished_tracking:
+                    self._last_completed_tracking_path = finished_tracking
+                    files["tracking_data"] = finished_tracking
+                keep_tracking = (
+                    self._consumer_thread is not None
+                    and self._consumer_thread.is_alive()
+                    and not self._stopped.is_set()
+                )
+                if keep_tracking:
+                    bg_path = self._make_tracking_jsonl_path(label="bg")
+                    self._rotate_tracking_file_locked(bg_path, reset_counter=True)
+                else:
+                    self._close_tracking_file_locked(force_fsync=True)
+                self._recording_tracking_path = None
             logger.info("Recording stopped (%.1fs, target %d frames), files: %s", elapsed, target_frames, files)
             result = {"status": "stopped", "files": files, "duration_s": round(elapsed, 1)}
             self._recording_info = {}
@@ -871,16 +886,18 @@ class Orchestrator:
 
     def flush_data_file(self) -> None:
         """Flush the JSONL tracking data file so report module can read it."""
-        if self._tracking_file is not None:
-            try:
-                self._tracking_file.flush()
-            except Exception:
-                pass
+        with self._jsonl_lock:
+            self._flush_tracking_file_locked(force_fsync=True)
 
     def get_current_jsonl_path(self) -> str | None:
         """Return path to the current tracking JSONL, or most recent."""
-        if self._tracking_file_path:
-            return self._tracking_file_path
+        with self._jsonl_lock:
+            if self._recording and self._tracking_file_path:
+                return self._tracking_file_path
+            if self._last_completed_tracking_path and Path(self._last_completed_tracking_path).exists():
+                return self._last_completed_tracking_path
+            if self._tracking_file_path:
+                return self._tracking_file_path
         jsonls = sorted(Path("recordings").glob("tracking_*.jsonl"), reverse=True)
         return str(jsonls[0]) if jsonls else None
 
@@ -1121,34 +1138,29 @@ class Orchestrator:
         }
 
         # Write JSONL
-        if self._tracking_file is not None:
-            ball_snap = (
-                {"x": round(ball.x, 3), "y": round(ball.y, 3), "z": round(ball.z, 3),
-                 "ts": round(ball.timestamp, 4)}
-                if ball is not None else None
-            )
-            row = {
-                "type": "player_pose",
-                "camera": cam_name,
-                "timestamp": round(msg["timestamp"], 4),
-                "capture_ts": round(msg["capture_ts"], 4),
-                "ball_3d": ball_snap,
-                "player": {
-                    "bbox": [round(v, 1) for v in player_record["bbox"]],
-                    "conf": round(player_record["conf"], 3),
-                    "foot_court": player_record["foot_court"],
-                    "dist_to_ball_2d": player_record["dist_to_ball_2d"],
-                    "keypoints_px": [
-                        [round(kp[0], 1), round(kp[1], 1), round(kp[2], 3)]
-                        for kp in player_record["keypoints_px"]
-                    ],
-                },
-            }
-            try:
-                self._tracking_file.write(json.dumps(row, ensure_ascii=False) + "\n")
-                self._tracking_file.flush()
-            except Exception:
-                pass
+        ball_snap = (
+            {"x": round(ball.x, 3), "y": round(ball.y, 3), "z": round(ball.z, 3),
+             "ts": round(ball.timestamp, 4)}
+            if ball is not None else None
+        )
+        row = {
+            "type": "player_pose",
+            "camera": cam_name,
+            "timestamp": round(msg["timestamp"], 4),
+            "capture_ts": round(msg["capture_ts"], 4),
+            "ball_3d": ball_snap,
+            "player": {
+                "bbox": [round(v, 1) for v in player_record["bbox"]],
+                "conf": round(player_record["conf"], 3),
+                "foot_court": player_record["foot_court"],
+                "dist_to_ball_2d": player_record["dist_to_ball_2d"],
+                "keypoints_px": [
+                    [round(kp[0], 1), round(kp[1], 1), round(kp[2], 3)]
+                    for kp in player_record["keypoints_px"]
+                ],
+            },
+        }
+        self._append_tracking_jsonl_row(row, bump_frame_counter=False)
 
     def _write_tracking_frame(
         self, d1, d2, cam_names, x, y, z, smoothed_pt, bounce, now, capture_ts
@@ -1167,7 +1179,6 @@ class Orchestrator:
 
         state = "tracking"
         row = {
-            "frame": self._data_frame_counter,
             "ts": round(now, 4),
             "capture_ts": round(capture_ts, 4),
             cam_names[0]: _cam_dict(d1),
@@ -1193,12 +1204,7 @@ class Orchestrator:
 
         row["state"] = state
 
-        try:
-            self._tracking_file.write(json.dumps(row, ensure_ascii=False) + "\n")
-            self._tracking_file.flush()
-            self._data_frame_counter += 1
-        except Exception:
-            pass
+        self._append_tracking_jsonl_row(row, bump_frame_counter=True)
 
     # ------------------------------------------------------------------
     def get_pipeline_status(self, name: str) -> PipelineStatus:
@@ -1724,6 +1730,77 @@ class Orchestrator:
             if isinstance(self._debug_data, dict):
                 self._debug_data["bounces"] = []
                 self._debug_data["peak_bounces"] = []
+
+    _TRACKING_FSYNC_INTERVAL_S = 1.0
+
+    def _make_tracking_jsonl_path(self, ts: str | None = None, label: str | None = None) -> str:
+        """Return a unique tracking_*.jsonl path under recordings/."""
+        if ts is None:
+            ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        base = f"tracking_{ts}"
+        if label:
+            base += f"_{label}"
+        candidate = self._recordings_dir / f"{base}.jsonl"
+        idx = 1
+        while candidate.exists():
+            candidate = self._recordings_dir / f"{base}_{idx}.jsonl"
+            idx += 1
+        return str(candidate)
+
+    def _open_tracking_file_locked(self, path: str, reset_counter: bool) -> None:
+        self._recordings_dir.mkdir(parents=True, exist_ok=True)
+        self._tracking_file = open(path, "w", encoding="utf-8", buffering=1)
+        self._tracking_file_path = path
+        if reset_counter:
+            self._data_frame_counter = 0
+        self._jsonl_last_fsync_ts = time.time()
+
+    def _flush_tracking_file_locked(self, force_fsync: bool = False) -> None:
+        if self._tracking_file is None:
+            return
+        try:
+            self._tracking_file.flush()
+        except Exception:
+            return
+        now = time.time()
+        if force_fsync or now - self._jsonl_last_fsync_ts >= self._TRACKING_FSYNC_INTERVAL_S:
+            try:
+                os.fsync(self._tracking_file.fileno())
+                self._jsonl_last_fsync_ts = now
+            except Exception:
+                pass
+
+    def _close_tracking_file_locked(self, force_fsync: bool = True) -> None:
+        if self._tracking_file is None:
+            return
+        self._flush_tracking_file_locked(force_fsync=force_fsync)
+        try:
+            self._tracking_file.close()
+        except Exception:
+            pass
+        self._tracking_file = None
+
+    def _rotate_tracking_file_locked(self, path: str, reset_counter: bool) -> None:
+        self._close_tracking_file_locked(force_fsync=True)
+        self._open_tracking_file_locked(path, reset_counter=reset_counter)
+        logger.info("Tracking JSONL started: %s", path)
+
+    def _append_tracking_jsonl_row(self, row: dict, *, bump_frame_counter: bool) -> None:
+        with self._jsonl_lock:
+            if self._tracking_file is None:
+                return
+            if bump_frame_counter:
+                row = {"frame": self._data_frame_counter, **row}
+            try:
+                self._tracking_file.write(json.dumps(row, ensure_ascii=False) + "\n")
+                # Keep the JSONL durable for long sessions without fsyncing
+                # every single line: flush on each row, fsync at bounded
+                # intervals so a crash loses at most a small tail window.
+                self._flush_tracking_file_locked(force_fsync=False)
+                if bump_frame_counter:
+                    self._data_frame_counter += 1
+            except Exception:
+                pass
 
     def get_latest_net_crossing(self) -> Optional[dict]:
         """Return the most recent net crossing event with speed."""
