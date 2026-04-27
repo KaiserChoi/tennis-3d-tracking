@@ -523,6 +523,21 @@ def format_rally(
         )
         return {}
 
+    # Realtime mainline currently does not produce a reliable is_hit / serve
+    # signal. If the matrix contains only bounce rows, the downstream miniapp
+    # service tends to 500 on business assumptions about stroke events.
+    # Until hit inference is restored, suppress export for bounce-only rallies.
+    has_stroke_event = any(
+        entry.get("type") in ("hit", "serve")
+        for entry in result_matrix
+    )
+    if not has_stroke_event:
+        logger.warning(
+            "Rally %d: resultmatrix has no hit/serve events (bounce-only), skipping export",
+            rally_result.rally_id,
+        )
+        return {}
+
     # Downsample resultmatrix if too large (keeps payload under size limit)
     if len(result_matrix) > _RESULT_MAX_ENTRIES:
         import numpy as _np

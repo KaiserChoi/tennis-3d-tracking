@@ -32,8 +32,13 @@ from app.triangulation import triangulate
 logger = logging.getLogger(__name__)
 
 # Maximum age (seconds) for pairing detections from two cameras.
-_MATCH_WINDOW = 2.0  # max age difference (seconds) between camera captures for pairing
-# Hikvision cameras without HW sync can have 0.5-1s capture_ts difference
+# `capture_ts` is the wall-clock at frame arrival in Python (camera_pipeline.py),
+# NOT a hardware-synced PTS — RTSP jitter, decoder buffering and GIL scheduling
+# make cross-camera capture_ts drift by 100-300ms in practice. A window wider
+# than the worst expected drift keeps pairing alive; too tight (e.g. 0.1s)
+# starves the whole pipeline. Tighten further only after measuring the live
+# best_dt distribution and confirming the p95 sits under the chosen value.
+_MATCH_WINDOW = 0.3
 
 
 class _PipelineHandle:
@@ -66,8 +71,9 @@ class Orchestrator:
         self._latest_frames: dict[str, bytes] = {}
         self._latest_3d: Optional[BallPosition3D] = None
         self._triangulation_active = False
-        self._last_tri_pair: tuple = (None, None)  # (d1.ts, d2.ts) to dedup
+        self._last_tri_pair: tuple = (None, None)  # (d1.capture_ts, d2.capture_ts) to dedup
         self._det_queues: dict[str, list] = {}  # per-camera detection queues
+        self._live_matcher: Optional[MultiBlobMatcher] = None
         self._consumer_thread: Optional[threading.Thread] = None
         self._stopped = threading.Event()
         self._inference_enabled: bool = True  # 全局推理开关
@@ -153,6 +159,7 @@ class Orchestrator:
         # MedianBG tracking state (track-first-triangulate-later pipeline)
         self._is_median_bg = self.config.model.detector_type == "median_bg"
         self._blob_buffers: dict[str, dict[int, list]] = {}  # cam -> {frame_id: [(cx,cy)]}
+        self._blob_capture_ts_by_frame: dict[str, dict[int, float]] = {}  # cam -> {frame_id: capture_ts}
         self._blob_homographies: dict = {}  # cam -> H matrix (lazy init)
         self._tracker_process_interval = 30  # run tracker every N blob_blocks
         self._tracker_block_count = 0
@@ -162,10 +169,13 @@ class Orchestrator:
 
 
         # Savitzky-Golay smoothing buffer (matches offline smooth_trajectory_sg)
-        self._sg_buffer: list[dict] = []  # raw 3D points with timestamps
+        self._sg_buffer: list[dict] = []  # [{"pt": raw_3d_point, "cam": cam_dets}]
         self._sg_window = 11
         self._sg_poly = 3
         self._sg_max_gap = 3  # frames gap to split segments
+        self._sg_max_gap_s = 0.6  # live stream is sparse; don't over-split SG segments
+        self._sg_midpoint_mode = False
+        self._sg_switched_to_midpoint = False
         self._live_rallies: list[dict] = []
         self._analytics_lock = threading.Lock()
 
@@ -355,12 +365,17 @@ class Orchestrator:
         tri_cams = cam_names[:2]  # first 2 positioned cameras for triangulation
 
         # Initialize multi-blob matcher for live mode
-        live_matcher = None
+        self._live_matcher = None
         if len(cam_names) == 2:
             pos1 = cam_positions.get(tri_cams[0])
             pos2 = cam_positions.get(tri_cams[1])
             if pos1 and pos2:
-                live_matcher = MultiBlobMatcher(pos1, pos2, valid_z_range=(0.0, 8.0))
+                self._live_matcher = MultiBlobMatcher(
+                    pos1,
+                    pos2,
+                    valid_z_range=(0.0, 8.0),
+                    fps=25.0,
+                )
 
         while not self._stopped.is_set():
             got_any = False
@@ -381,6 +396,9 @@ class Orchestrator:
                             if det.get("type") == "blob_block":
                                 cam = det["camera_name"]
                                 self._blob_buffers.setdefault(cam, {}).update(det["blobs"])
+                                self._blob_capture_ts_by_frame.setdefault(cam, {}).update(
+                                    det.get("capture_ts_by_frame", {})
+                                )
                                 self._tracker_block_count += 1
                                 # Build a minimal latest_detection for dashboard overlay
                                 # (pick first blob of last frame as rough position)
@@ -468,9 +486,13 @@ class Orchestrator:
                         self._det_queues[c] = self._det_queues[c][-16:]
 
             for d1, d2 in pairs:
-                # Dedup by pixel coords
-                pair_id = (d1.get("pixel_x"), d1.get("pixel_y"),
-                           d2.get("pixel_x"), d2.get("pixel_y"))
+                # Dedup exact re-processing of the same cross-camera pair by
+                # capture time, not by pixel coords. A stationary ball can
+                # legitimately occupy the same pixels across consecutive frames.
+                pair_id = (
+                    d1.get("capture_ts", d1["timestamp"]),
+                    d2.get("capture_ts", d2["timestamp"]),
+                )
                 if pair_id == self._last_tri_pair:
                     continue
                 # --- Confidence filtering (top1_conf20) ---
@@ -494,10 +516,10 @@ class Orchestrator:
                     match = None
 
 
-                    if (live_matcher
+                    if (self._live_matcher
                             and "candidates" in d1
                             and "candidates" in d2):
-                        match = live_matcher.match(d1, d2)
+                        match = self._live_matcher.match(d1, d2)
                         if match is not None:
                             x, y, z = match["x"], match["y"], match["z"]
 
@@ -568,8 +590,10 @@ class Orchestrator:
                         # Net crossing detection
                         prev_y = self._prev_3d["y"]
                         curr_y = y
-                        if (prev_y < self._NET_Y and curr_y >= self._NET_Y) or \
-                           (prev_y > self._NET_Y and curr_y <= self._NET_Y):
+                        if self._net_crossing_enabled and (
+                            (prev_y < self._NET_Y and curr_y >= self._NET_Y) or
+                            (prev_y > self._NET_Y and curr_y <= self._NET_Y)
+                        ):
                             # Use median of recent speeds (smoothed, robust to outliers)
                             if len(self._speed_buffer) >= 1:
                                 speed_kmh = float(np.median(list(self._speed_buffer)))
@@ -660,36 +684,23 @@ class Orchestrator:
                         # latter did, so duplicates silently stole crossings.
                         accepted_bounce = None
                         accepted_bd = None
-                        consumed_nc = None
                         if hbounce is not None:
                             bd = hbounce.to_dict()
-                            bd["capture_ts"] = capture_ts
-                            bd["detect_delay"] = round(now - capture_ts, 2)
-                            # Match to most recent UNUSED net crossing within 3s
-                            for nc in reversed(self._net_crossings):
-                                if nc.get("_used"):
-                                    continue
-                                if now - nc["timestamp"] < 3.0:
-                                    bd["speed_kmh"] = nc["speed_kmh"]
-                                    bd["speed_direction"] = nc["direction"]
-                                    nc["_used"] = True
-                                    consumed_nc = nc
-                                    break
-                            if self._is_duplicate_bounce(bd):
-                                self._post_filter_stats["duplicate"] += 1
-                                if consumed_nc is not None:
-                                    consumed_nc["_used"] = False
-                                    consumed_nc = None
-                            else:
-                                ok, reason = self._post_filter_bounce(bd)
-                                self._post_filter_stats[reason] += 1
-                                if ok:
-                                    accepted_bounce = hbounce
-                                    accepted_bd = bd
-                                else:
-                                    if consumed_nc is not None:
-                                        consumed_nc["_used"] = False
-                                        consumed_nc = None
+                            event_capture_ts = bd.get("capture_ts")
+                            if event_capture_ts is None:
+                                event_capture_ts = getattr(hbounce, "capture_ts", None)
+                            if event_capture_ts is None:
+                                event_capture_ts = capture_ts
+                            event_capture_ts = float(event_capture_ts)
+                            bd["capture_ts"] = event_capture_ts
+                            bd["detect_delay"] = round(now - event_capture_ts, 2)
+                            accepted_bd = self._gate_live_bounce_candidate_locked(
+                                bd,
+                                now=now,
+                                match_speed=True,
+                            )
+                            if accepted_bd is not None:
+                                accepted_bounce = hbounce
 
                         # --- Fan out ---
                         # Legacy RallyTracker gets the bounce (drives the
@@ -758,11 +769,11 @@ class Orchestrator:
                         # data, but there's no longer an automatic rally-end
                         # trigger that flushes it to the export endpoint.
                         is_bounce_frame = accepted_bounce is not None
-                        if is_bounce_frame:
-                            self._last_bounce_ts = now
+                        if is_bounce_frame and accepted_bd is not None:
+                            self._last_bounce_ts = float(accepted_bd.get("timestamp", capture_ts))
                         is_hit_frame = (
                             not is_bounce_frame
-                            and now - self._last_bounce_ts < 1.0
+                            and capture_ts - self._last_bounce_ts < 1.0
                             and len(self._speed_buffer) >= 2
                             and self._speed_buffer[-1] > self._speed_buffer[-2]
                         )
@@ -1524,10 +1535,13 @@ class Orchestrator:
             if len(self._peak_bounces_eval) > 100:
                 self._peak_bounces_eval = self._peak_bounces_eval[-100:]
 
-        smoothed_pt = self._smooth_latest(pt)
+        smoothed_pt, smoothed_cam_dets = self._smooth_latest(pt, cam_dets)
+        if self._sg_switched_to_midpoint:
+            self._hybrid_bounce.reset()
+            self._sg_switched_to_midpoint = False
         hbounce = (
-            self._hybrid_bounce.update(smoothed_pt or pt, cam_dets)
-            if self._bounce_detection_enabled
+            self._hybrid_bounce.update(smoothed_pt, smoothed_cam_dets or {})
+            if self._bounce_detection_enabled and smoothed_pt is not None
             else None
         )
         return smoothed_pt, hbounce
@@ -1620,6 +1634,45 @@ class Orchestrator:
             self._live_bounces = self._live_bounces[-50:]
         self._debug_record_bounce(debug_source if debug_source is not None else bd)
         self._enqueue_ws_bounce_locked(bd)
+
+    def _gate_live_bounce_candidate_locked(
+        self,
+        bd: dict,
+        *,
+        now: float,
+        match_speed: bool,
+    ) -> dict | None:
+        """Apply the shared realtime bounce gate to one candidate event."""
+        consumed_nc = None
+        if match_speed:
+            event_ts = float(bd.get("timestamp", now))
+            for nc in reversed(self._net_crossings):
+                if nc.get("_used"):
+                    continue
+                age = event_ts - nc["timestamp"]
+                if age < 0:
+                    continue
+                if age < 3.0:
+                    bd["speed_kmh"] = nc["speed_kmh"]
+                    bd["speed_direction"] = nc["direction"]
+                    nc["_used"] = True
+                    consumed_nc = nc
+                    break
+                break
+
+        if self._is_duplicate_bounce(bd):
+            self._post_filter_stats["duplicate"] += 1
+            if consumed_nc is not None:
+                consumed_nc["_used"] = False
+            return None
+
+        ok, reason = self._post_filter_bounce(bd)
+        self._post_filter_stats[reason] += 1
+        if not ok:
+            if consumed_nc is not None:
+                consumed_nc["_used"] = False
+            return None
+        return bd
 
     def _estimate_speed_kmh_from_window(self) -> float | None:
         """Estimate horizontal ball speed from a short recent 3D window.
@@ -1737,7 +1790,7 @@ class Orchestrator:
     # and F4 (net-crossing context) are parameterized but disabled by
     # default; flip the toggles below after side-by-side eval.
     # ------------------------------------------------------------------
-    _POSTFILT_MIN_INTERVAL_S = 0.4      # F2: stricter than dedup's 0.7s
+    _POSTFILT_MIN_INTERVAL_S = 0.6      # F2: above Hybrid's ~0.48s internal cooldown
     _POSTFILT_MIN_INTERVAL_DIST_M = 2.0  # only near-space repeats count as spam
     _POSTFILT_NET_CTX_WINDOW_S = 3.0    # F4: net crossing must be within this
     # F1 (rally-state gating) removed with RallyStateMachine — no rally-sm,
@@ -1759,6 +1812,10 @@ class Orchestrator:
         # dedup gate (which only catches near-simultaneous dual reports of
         # the *same* physical bounce). Real rally bounces are usually > 0.4s
         # apart; anything tighter is likely a second spurious report.
+        #
+        # Do not require same_side here: if landing refinement / homography
+        # jitter nudges one report across NET_Y, the side label flips and a
+        # true duplicate would slip through.
         if self._POSTFILT_F2_ENABLED and self._live_bounces:
             ts = bd.get("timestamp")
             if ts is not None:
@@ -1767,12 +1824,11 @@ class Orchestrator:
                 if 0 <= dt < self._POSTFILT_MIN_INTERVAL_S:
                     bx, by = bd.get("x"), bd.get("y")
                     lx, ly = last.get("x"), last.get("y")
-                    same_side = bd.get("side") == last.get("side")
                     if None not in (bx, by, lx, ly):
                         dx = bx - lx
                         dy = by - ly
                         dist = (dx * dx + dy * dy) ** 0.5
-                        if same_side and dist < self._POSTFILT_MIN_INTERVAL_DIST_M:
+                        if dist < self._POSTFILT_MIN_INTERVAL_DIST_M:
                             return False, "f2_min_interval"
 
         # F3: speed/height continuity — placeholder. Hybrid's internal
@@ -1960,6 +2016,8 @@ class Orchestrator:
 
         buf1 = self._blob_buffers.get(cam1, {})
         buf2 = self._blob_buffers.get(cam2, {})
+        ts_map1 = self._blob_capture_ts_by_frame.get(cam1, {})
+        ts_map2 = self._blob_capture_ts_by_frame.get(cam2, {})
         if not buf1 or not buf2:
             return
 
@@ -1990,6 +2048,17 @@ class Orchestrator:
         best = matched[0]["trajectory"]
         # (frame, x, y, z, px1, py1, px2, py2, ray_dist)
 
+        frame_capture_ts: dict[int, float] = {}
+        for pt in best:
+            fi = int(pt[0])
+            ts_candidates = []
+            if fi in ts_map1:
+                ts_candidates.append(float(ts_map1[fi]))
+            if fi in ts_map2:
+                ts_candidates.append(float(ts_map2[fi]))
+            if ts_candidates:
+                frame_capture_ts[fi] = float(sum(ts_candidates) / len(ts_candidates))
+
         # Emit new 3D points
         for pt in best:
             fi = pt[0]
@@ -2007,10 +2076,12 @@ class Orchestrator:
             self._latest_detections[cam1] = {
                 "camera_name": cam1, "pixel_x": pt[4], "pixel_y": pt[5],
                 "x": x, "y": y, "timestamp": now,
+                "capture_ts": frame_capture_ts.get(int(fi), now),
             }
             self._latest_detections[cam2] = {
                 "camera_name": cam2, "pixel_x": pt[6], "pixel_y": pt[7],
                 "x": x, "y": y, "timestamp": now,
+                "capture_ts": frame_capture_ts.get(int(fi), now),
             }
 
         # Step 3: Bounce detection on trajectory
@@ -2023,8 +2094,27 @@ class Orchestrator:
                 if b["frame"] in self._emitted_bounce_frames:
                     continue
                 self._emitted_bounce_frames.add(b["frame"])
+                bounce_capture_ts = frame_capture_ts.get(int(b["frame"]), now)
+                bd = self._normalize_live_bounce_dict(
+                    b,
+                    fallback_ts=bounce_capture_ts,
+                    fallback_speed_kmh=0,
+                )
+                bd["capture_ts"] = float(
+                    bd["capture_ts"] if bd.get("capture_ts") is not None
+                    else bd["timestamp"] if bd.get("timestamp") is not None
+                    else bounce_capture_ts
+                )
+                bd["detect_delay"] = round(now - float(bd["capture_ts"]), 2)
+                accepted_bd = self._gate_live_bounce_candidate_locked(
+                    bd,
+                    now=now,
+                    match_speed=False,
+                )
+                if accepted_bd is None:
+                    continue
                 self._record_live_bounce_locked(
-                    self._normalize_live_bounce_dict(b, fallback_ts=now, fallback_speed_kmh=0),
+                    accepted_bd,
                     debug_source=b,
                 )
                 logger.info(
@@ -2033,42 +2123,58 @@ class Orchestrator:
                     "IN" if b["in_court"] else "OUT",
                 )
 
-    def _smooth_latest(self, pt: dict) -> dict | None:
+    def _smooth_latest(self, pt: dict, cam_dets: dict | None = None) -> tuple[dict | None, dict | None]:
         """Add a raw 3D point to the SG buffer and return a smoothed point.
 
         Matches offline ``smooth_trajectory_sg()`` logic: applies Savitzky-Golay
         filter to recent continuous points and returns the smoothed value at the
         midpoint of the window (best smoothing quality).
 
-        Returns None if not enough points yet for smoothing.
+        Returns ``(smoothed_pt, aligned_cam_dets)`` where ``aligned_cam_dets``
+        comes from the same source frame as the emitted smoothed point.
+
+        During warm-up / short-segment periods we fall back to the raw point.
+        When SG first becomes stable enough to emit midpoint frames, the
+        caller resets Hybrid once so we don't mix earlier raw timestamps with
+        later midpoint timestamps inside the same Hybrid buffer.
         """
         from scipy.signal import savgol_filter
 
-        self._sg_buffer.append(pt)
+        self._sg_buffer.append({"pt": pt, "cam": cam_dets or {}})
         if len(self._sg_buffer) > 60:
             self._sg_buffer = self._sg_buffer[-60:]
 
         buf = self._sg_buffer
         n = len(buf)
         if n < self._sg_window:
-            return pt  # not enough points, pass through raw
+            self._sg_midpoint_mode = False
+            return pt, cam_dets
 
-        # Find the latest continuous segment (no gap > sg_max_gap frames apart)
-        # We use timestamp difference: max gap ~0.15s at ~25fps = 3 frames
+        # Find the latest continuous segment using capture time plus frame gap.
         seg_start = n - 1
         for i in range(n - 2, -1, -1):
-            dt = buf[i + 1]["timestamp"] - buf[i]["timestamp"]
-            if dt > 0.2:  # >0.2s gap = new segment
+            t_prev = float(buf[i]["pt"].get("capture_ts", buf[i]["pt"]["timestamp"]))
+            t_next = float(buf[i + 1]["pt"].get("capture_ts", buf[i + 1]["pt"]["timestamp"]))
+            dt = t_next - t_prev
+            fi_prev = buf[i]["pt"].get("frame_index")
+            fi_next = buf[i + 1]["pt"].get("frame_index")
+            frame_gap_bad = (
+                fi_prev is not None
+                and fi_next is not None
+                and (fi_next - fi_prev < 0 or fi_next - fi_prev > self._sg_max_gap)
+            )
+            if dt < 0 or dt > self._sg_max_gap_s or frame_gap_bad:
                 break
             seg_start = i
 
         seg = buf[seg_start:]
         if len(seg) < self._sg_window:
-            return pt  # segment too short
+            self._sg_midpoint_mode = False
+            return pt, cam_dets
 
-        xs = np.array([p["x"] for p in seg])
-        ys = np.array([p["y"] for p in seg])
-        zs = np.array([p["z"] for p in seg])
+        xs = np.array([e["pt"]["x"] for e in seg])
+        ys = np.array([e["pt"]["y"] for e in seg])
+        zs = np.array([e["pt"]["z"] for e in seg])
 
         xs_s = savgol_filter(xs, self._sg_window, self._sg_poly)
         ys_s = savgol_filter(ys, self._sg_window, self._sg_poly)
@@ -2081,14 +2187,22 @@ class Orchestrator:
         if mid < 0:
             mid = len(seg) - 1
 
-        src = seg[mid]
-        return {
-            "x": float(xs_s[mid]),
-            "y": float(ys_s[mid]),
-            "z": float(zs_s[mid]),
-            "timestamp": src["timestamp"],
-            "capture_ts": src.get("capture_ts", src["timestamp"]),
-        }
+        src = seg[mid]["pt"]
+        if not self._sg_midpoint_mode:
+            self._sg_midpoint_mode = True
+            self._sg_switched_to_midpoint = True
+            return None, None
+        return (
+            {
+                "x": float(xs_s[mid]),
+                "y": float(ys_s[mid]),
+                "z": float(zs_s[mid]),
+                "timestamp": src.get("capture_ts", src["timestamp"]),
+                "capture_ts": src.get("capture_ts", src["timestamp"]),
+                "frame_index": src.get("frame_index"),
+            },
+            seg[mid].get("cam", {}),
+        )
 
     def reset_live_analytics(self) -> None:
         """Reset every piece of per-session analytics state so the next
@@ -2115,9 +2229,19 @@ class Orchestrator:
             self._speed_points.clear()
             self._speed_buffer.clear()
             self._sg_buffer.clear()
+            self._sg_midpoint_mode = False
+            self._sg_switched_to_midpoint = False
+            self._blob_buffers.clear()
+            self._blob_capture_ts_by_frame.clear()
+            self._tracker_block_count = 0
+            self._emitted_3d_frames.clear()
+            self._emitted_bounce_frames.clear()
+            self._last_bounce_ts = 0.0
             self._prev_3d = None
             self._last_tri_pair = None
             self._conf_history.clear()
+            if self._live_matcher is not None:
+                self._live_matcher.reset()
 
             # Net crossing state (clearing both the history and the "latest")
             self._net_crossings.clear()

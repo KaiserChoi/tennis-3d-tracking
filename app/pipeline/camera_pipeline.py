@@ -213,13 +213,17 @@ def run_pipeline(
             if isinstance(heatmaps, dict):
                 # ---- MedianBG path: send raw blob_block ----
                 blob_block = {}
+                capture_ts_by_frame = {}
                 for local_i, blobs in heatmaps.items():
                     if local_i < len(frame_id_buffer):
-                        blob_block[frame_id_buffer[local_i]] = blobs
+                        frame_key = frame_id_buffer[local_i]
+                        blob_block[frame_key] = blobs
+                        capture_ts_by_frame[frame_key] = capture_ts_buffer[local_i]
                 msg = {
                     "camera_name": name,
                     "type": "blob_block",
                     "blobs": blob_block,
+                    "capture_ts_by_frame": capture_ts_by_frame,
                     "capture_ts": capture_ts_buffer[0],
                     "timestamp": time.time(),
                 }
@@ -234,6 +238,7 @@ def run_pipeline(
                     blobs = heatmaps[i]
                     if not blobs:
                         continue
+                    frame_capture_ts = capture_ts_buffer[i] if i < len(capture_ts_buffer) else capture_ts_buffer[0]
 
                     top = blobs[0]
                     px, py, conf = top["pixel_x"], top["pixel_y"], top["blob_sum"]
@@ -255,7 +260,7 @@ def run_pipeline(
                         "pixel_x": px, "pixel_y": py,
                         "confidence": conf, "blob_sum": conf,
                         "timestamp": time.time(),
-                        "capture_ts": capture_ts_buffer[0],
+                        "capture_ts": frame_capture_ts,
                         "frame_index": frame_id_buffer[i] if i < len(frame_id_buffer) else 0,
                         "candidates": candidates,
                     }
@@ -270,6 +275,7 @@ def run_pipeline(
                     blobs = tracker.process_heatmap_multi(heatmaps[i], max_blobs=2)
                     if not blobs:
                         continue
+                    frame_capture_ts = capture_ts_buffer[i] if i < len(capture_ts_buffer) else capture_ts_buffer[0]
 
                     top = blobs[0]
                     px, py, conf = top["pixel_x"], top["pixel_y"], top["blob_sum"]
@@ -291,7 +297,7 @@ def run_pipeline(
                         "pixel_x": px, "pixel_y": py,
                         "confidence": conf, "blob_sum": conf,
                         "timestamp": time.time(),
-                        "capture_ts": capture_ts_buffer[0],
+                        "capture_ts": frame_capture_ts,
                         "frame_index": frame_id_buffer[i] if i < len(frame_id_buffer) else 0,
                         "candidates": candidates,
                     }

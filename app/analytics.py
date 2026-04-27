@@ -68,6 +68,7 @@ class BounceEvent:
     z: float
     timestamp: float
     in_court: bool
+    capture_ts: Optional[float] = None
     frame_index: Optional[int] = None
     confidence: float = 1.0
     source_camera: str = "3d"  # "cam66" | "cam68" | "interpolated" | "3d"
@@ -75,6 +76,8 @@ class BounceEvent:
     cam_pixels: dict = field(default_factory=dict)  # {"cam66": [px, py], ...}
 
     def __post_init__(self):
+        if self.capture_ts is None:
+            self.capture_ts = self.timestamp
         if not self.side:
             self.side = "near" if self.y < NET_Y else "far"
 
@@ -84,6 +87,7 @@ class BounceEvent:
             "y": round(float(self.y), 4),
             "z": round(float(self.z), 4),
             "timestamp": round(float(self.timestamp), 4),
+            "capture_ts": round(float(self.capture_ts), 4) if self.capture_ts is not None else None,
             "in_court": bool(self.in_court),
             "frame_index": self.frame_index,
             "confidence": round(float(self.confidence), 3),
@@ -872,7 +876,7 @@ class HybridBounceDetector:
         self._speed_dt = speed_dt
         self._cooldown = cooldown_frames
         self._fps = fps
-        # Max timestamp gap allowed within a continuous segment. Offline data
+        # Max capture-time gap allowed within a continuous segment. Offline data
         # is dense (5-frame gap at 25fps == 0.2s is fine); live is sparser,
         # ~4% missed-match rate can burst >5 frames, so orchestrator passes a
         # looser value (e.g. 0.5s) for live.
@@ -902,12 +906,16 @@ class HybridBounceDetector:
         xs = np.array([e["pt"]["x"] for e in self._buf])
         ys = np.array([e["pt"]["y"] for e in self._buf])
         zs = np.array([e["pt"]["z"] for e in self._buf])
-        ts = np.array([e["pt"]["timestamp"] for e in self._buf])
+        ts = np.array([
+            float(e["pt"].get("capture_ts", e["pt"]["timestamp"]))
+            for e in self._buf
+        ])
 
         # Find continuous segment at the end of buffer (gap-tolerant)
         seg_start = n - 1
         for i in range(n - 2, -1, -1):
-            if ts[i + 1] - ts[i] > self._max_gap_s:
+            dt_seg = ts[i + 1] - ts[i]
+            if dt_seg < 0 or dt_seg > self._max_gap_s:
                 break
             seg_start = i
         seg_len = n - seg_start
@@ -932,9 +940,14 @@ class HybridBounceDetector:
         if y_i < COURT_Y_MIN - 1.0 or y_i > COURT_Y_MAX + 1.0:
             return None
 
+        # Refine first so cooldown is anchored to the emitted landing frame,
+        # not the earlier candidate frame that only had enough context to be
+        # checked.
+        land_idx = self._refine_landing_idx(i, seg_start, n, half_win=4)
+        land_ts = float(ts[land_idx])
+
         # Cooldown
-        pt_ts = ts[i]
-        if pt_ts - self._last_bounce_ts < self._cooldown / self._fps:
+        if land_ts - self._last_bounce_ts < self._cooldown / self._fps:
             return None
 
         # ── Signal 1: V-shape margins ──
@@ -1033,7 +1046,7 @@ class HybridBounceDetector:
                 return None
 
         # ── Bounce accepted! ──
-        self._last_bounce_ts = pt_ts
+        self._last_bounce_ts = land_ts
 
         # Get cam pixel coords at this point
         cam_dets = self._buf[i]["cam"]
@@ -1051,9 +1064,7 @@ class HybridBounceDetector:
         # landing selector. This keeps "has a bounce happened?" decided by
         # the statistical filters above while improving "where exactly did
         # it land?" — matches user feedback to separate event vs. position.
-        land_idx = self._refine_landing_idx(i, seg_start, n, half_win=4)
         land_z = float(zs[land_idx])
-        land_ts = float(ts[land_idx])
         land_x, land_y, src = self._select_landing_coords(land_idx)
 
         in_court = (SINGLES_X_MIN <= land_x <= SINGLES_X_MAX
@@ -1072,6 +1083,7 @@ class HybridBounceDetector:
             y=float(land_y),
             z=land_z,
             timestamp=land_ts,
+            capture_ts=self._buf[land_idx]["pt"].get("capture_ts", land_ts),
             in_court=in_court,
             frame_index=self._buf[land_idx]["pt"].get("frame_index"),
             confidence=round(min(1.0, v_score + 0.1 * best_ratio), 3),
