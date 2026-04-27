@@ -176,6 +176,7 @@ class Orchestrator:
 
         # Net crossing speed detection
         self._prev_3d: Optional[dict] = None
+        self._speed_points: deque = deque(maxlen=12)  # recent 3D points for local-fit speed
         self._speed_buffer: deque = deque(maxlen=5)  # recent per-frame speeds for smoothing
         self._latest_net_crossing: Optional[dict] = None
         self._net_crossings: list[dict] = []
@@ -183,9 +184,14 @@ class Orchestrator:
         self._SPEED_MIN = 30   # km/h — consumer minimum
         self._SPEED_MAX = 150  # km/h — consumer maximum (net-crossing gate)
         self._MAX_PHYSICAL_SPEED = 280  # km/h — physics gate (world record ~263 km/h)
+        self._SPEED_FIT_WINDOW = 7
+        self._SPEED_MIN_POINTS = 4
+        self._SPEED_MAX_GAP_S = 0.20
+        self._SPEED_MAX_FRAME_GAP = 3
+        self._SPEED_MAX_RESIDUAL_M = 0.35
 
         # 3D display WebSocket push
-        self._ws_bounce_queue: list[dict] = []  # bounces to push
+        self._ws_bounce_queue: deque[dict[str, Any]] = deque(maxlen=100)
         self._ws_thread: Optional[threading.Thread] = None
         self._ws_url = "wss://tennisserver.motionrivalry.com:8086/general"
         self._ws_enabled = False
@@ -544,20 +550,20 @@ class Orchestrator:
                     pt = {"x": x, "y": y, "z": z, "timestamp": now,
                           "capture_ts": capture_ts, "frame_index": fi}
                     if self._prev_3d is not None:
-                        # Compute per-frame speed and buffer it.
-                        # Physics gate: tennis ball max ~263 km/h world record.
-                        # Displacement > this in one frame = false detection or
-                        # pair mismatch → skip so we don't pollute the buffer or
-                        # inflate _last_frame_speed_kmh shown on dashboard.
-                        t_delta = now - self._prev_3d["timestamp"]
-                        if t_delta > 0.001:
-                            dx = x - self._prev_3d["x"]
-                            dy = y - self._prev_3d["y"]
-                            dz = z - self._prev_3d["z"]
-                            dist = (dx * dx + dy * dy + dz * dz) ** 0.5
-                            speed_kmh_raw = dist / t_delta * 3.6
-                            if speed_kmh_raw <= self._MAX_PHYSICAL_SPEED:
-                                self._speed_buffer.append(speed_kmh_raw)
+                        gap_s = capture_ts - self._prev_3d.get("capture_ts", capture_ts)
+                        frame_gap = fi - self._prev_3d.get("frame_index", fi)
+                        if gap_s <= 0 or gap_s > self._SPEED_MAX_GAP_S or frame_gap > self._SPEED_MAX_FRAME_GAP:
+                            self._speed_points.clear()
+                            self._speed_buffer.clear()
+                    self._speed_points.append(pt)
+                    if self._prev_3d is not None:
+                        # Estimate speed from a short local fit on recent
+                        # capture_ts-aligned points. This is more robust than
+                        # consecutive-frame differencing when tracking noise
+                        # perturbs one or two frames.
+                        speed_kmh_fit = self._estimate_speed_kmh_from_window()
+                        if speed_kmh_fit is not None:
+                            self._speed_buffer.append(speed_kmh_fit)
 
                         # Net crossing detection
                         prev_y = self._prev_3d["y"]
@@ -565,7 +571,7 @@ class Orchestrator:
                         if (prev_y < self._NET_Y and curr_y >= self._NET_Y) or \
                            (prev_y > self._NET_Y and curr_y <= self._NET_Y):
                             # Use median of recent speeds (smoothed, robust to outliers)
-                            if len(self._speed_buffer) >= 2:
+                            if len(self._speed_buffer) >= 1:
                                 speed_kmh = float(np.median(list(self._speed_buffer)))
                                 if self._SPEED_MIN <= speed_kmh <= self._SPEED_MAX:
                                     direction = "near_to_far" if curr_y > prev_y else "far_to_near"
@@ -600,6 +606,8 @@ class Orchestrator:
                         self._last_frame_speed_kmh = float(
                             int(round(float(np.median(list(self._speed_buffer)))))
                         )
+                    else:
+                        self._last_frame_speed_kmh = 0.0
 
 
                     # cam_dets feeds HybridBounceDetector's landing-coord selector.
@@ -652,7 +660,6 @@ class Orchestrator:
                         # latter did, so duplicates silently stole crossings.
                         accepted_bounce = None
                         accepted_bd = None
-                        accepted_matched_speed = 0
                         consumed_nc = None
                         if hbounce is not None:
                             bd = hbounce.to_dict()
@@ -665,7 +672,6 @@ class Orchestrator:
                                 if now - nc["timestamp"] < 3.0:
                                     bd["speed_kmh"] = nc["speed_kmh"]
                                     bd["speed_direction"] = nc["direction"]
-                                    accepted_matched_speed = nc["speed_kmh"]
                                     nc["_used"] = True
                                     consumed_nc = nc
                                     break
@@ -737,20 +743,15 @@ class Orchestrator:
                         _tri_bounce = accepted_bounce
 
                         if accepted_bounce is not None:
-                            self._live_bounces.append(accepted_bd)
-                            self._debug_record_bounce(accepted_bounce)
-                            if self._ws_enabled and accepted_matched_speed > 0:
-                                bx, by = accepted_bounce.x, accepted_bounce.y
-                                self._ws_bounce_queue.append({
-                                    "x": round(bx * 10, 4),
-                                    "y": round(by * 10, 4),
-                                    "speed": accepted_matched_speed,
-                                    "timestamp": int(now * 1000),
-                                })
-                                if len(self._ws_bounce_queue) > 100:
-                                    self._ws_bounce_queue = self._ws_bounce_queue[-100:]
-                        if len(self._live_bounces) > 50:
-                            self._live_bounces = self._live_bounces[-50:]
+                            accepted_bd = self._normalize_live_bounce_dict(
+                                accepted_bd,
+                                fallback_ts=now,
+                                fallback_speed_kmh=0,
+                            )
+                            self._record_live_bounce_locked(
+                                accepted_bd,
+                                debug_source=accepted_bounce,
+                            )
 
                         # Rally-raw buffer still accumulates ball+player per
                         # frame so offline /api/report/generate still has
@@ -1545,11 +1546,161 @@ class Orchestrator:
                 "rally_state": self._rally_tracker.get_state().to_dict(),
                 "completed_rallies": self._rally_tracker.get_completed_rallies(),
                 "recent_bounces": list(self._live_bounces[-10:]),
+                "total_bounces": len(self._live_bounces),
+                "ws_pending_bounces": len(self._ws_bounce_queue),
+                "last_frame_speed_kmh": int(round(float(self._last_frame_speed_kmh or 0.0))),
+                "latest_net_crossing": dict(self._latest_net_crossing) if self._latest_net_crossing else None,
                 # Peak sidecar (eval only)
                 "peak_bounces_eval": list(self._peak_bounces_eval[-10:]),
                 # Post-filter telemetry — count per rejection reason plus "accepted".
                 "post_filter_stats": dict(self._post_filter_stats),
             }
+
+    @staticmethod
+    def _normalize_live_bounce_dict(
+        bounce,
+        *,
+        fallback_ts: float | None = None,
+        fallback_speed_kmh: float = 0.0,
+    ) -> dict:
+        """Return a bounce dict with stable fields for minimap, API and 3D push."""
+        if isinstance(bounce, dict):
+            bd = dict(bounce)
+        else:
+            bd = bounce.to_dict()
+        ts = bd.get("timestamp")
+        if ts is None:
+            bd["timestamp"] = float(fallback_ts if fallback_ts is not None else time.time())
+        speed = bd.get("speed_kmh")
+        if speed is None:
+            bd["speed_kmh"] = int(round(float(fallback_speed_kmh)))
+        else:
+            try:
+                speed_val = float(speed)
+            except Exception:
+                speed_val = 0.0
+            bd["speed_kmh"] = int(round(speed_val))
+        return bd
+
+    def _enqueue_ws_bounce_locked(self, bd: dict) -> None:
+        """Queue a bounce for 3D push from the same live event source.
+
+        Note: the remote 3D receiver expects decimeter-like court units
+        (`x * 10`, `y * 10`). Minimap/API keep raw court coordinates in
+        meters; only the WebSocket egress applies this protocol transform.
+        """
+        if not self._ws_enabled:
+            return
+        bx, by = bd.get("x"), bd.get("y")
+        if bx is None or by is None:
+            return
+        ts = bd.get("timestamp")
+        if ts is None:
+            ts = time.time()
+        speed = bd.get("speed_kmh", 0)
+        try:
+            speed_val = int(round(float(speed or 0)))
+        except Exception:
+            speed_val = 0
+        ws_x = round(float(bx) * 10.0, 4)
+        ws_y = round(float(by) * 10.0, 4)
+        self._ws_bounce_queue.append({
+            "x": ws_x,
+            "y": ws_y,
+            "raw_x": round(float(bx), 4),
+            "raw_y": round(float(by), 4),
+            "speed": speed_val,
+            "timestamp": int(round(float(ts) * 1000)),
+        })
+
+    def _record_live_bounce_locked(self, bd: dict, *, debug_source=None) -> None:
+        """Publish one accepted bounce to every realtime consumer from one source dict."""
+        self._live_bounces.append(bd)
+        if len(self._live_bounces) > 50:
+            self._live_bounces = self._live_bounces[-50:]
+        self._debug_record_bounce(debug_source if debug_source is not None else bd)
+        self._enqueue_ws_bounce_locked(bd)
+
+    def _estimate_speed_kmh_from_window(self) -> float | None:
+        """Estimate horizontal ball speed from a short recent 3D window.
+
+        Uses capture timestamps instead of consumer wall-clock time and fits
+        x(t), y(t) with local linear regression on the latest continuous
+        segment. This is more stable than two-point finite differences when
+        tracker noise or queue jitter perturb individual frames.
+        """
+        pts = list(self._speed_points)
+        if len(pts) < self._SPEED_MIN_POINTS:
+            return None
+
+        # Keep only the latest continuous tail. Large timestamp/frame gaps
+        # usually mean missed matches or queue jitter across separate shots.
+        tail = [pts[-1]]
+        for prev in reversed(pts[:-1]):
+            dt = tail[0]["capture_ts"] - prev["capture_ts"]
+            frame_gap = tail[0].get("frame_index", 0) - prev.get("frame_index", 0)
+            if dt <= 0 or dt > self._SPEED_MAX_GAP_S or frame_gap > self._SPEED_MAX_FRAME_GAP:
+                break
+            tail.insert(0, prev)
+            if len(tail) >= self._SPEED_FIT_WINDOW:
+                break
+
+        if len(tail) < self._SPEED_MIN_POINTS:
+            return None
+
+        # Deduplicate / enforce increasing capture_ts.
+        filtered = []
+        last_ts = None
+        for p in tail:
+            ts = float(p["capture_ts"])
+            if last_ts is not None and ts - last_ts <= 1e-4:
+                continue
+            filtered.append(p)
+            last_ts = ts
+        if len(filtered) < self._SPEED_MIN_POINTS:
+            return None
+
+        ts = np.array([float(p["capture_ts"]) for p in filtered], dtype=float)
+        xs = np.array([float(p["x"]) for p in filtered], dtype=float)
+        ys = np.array([float(p["y"]) for p in filtered], dtype=float)
+
+        span = float(ts[-1] - ts[0])
+        if span <= 1e-3:
+            return None
+
+        t = ts - ts.mean()
+
+        def _fit_speed(t_arr, x_arr, y_arr):
+            cx = np.polyfit(t_arr, x_arr, 1)
+            cy = np.polyfit(t_arr, y_arr, 1)
+            pred_x = np.polyval(cx, t_arr)
+            pred_y = np.polyval(cy, t_arr)
+            residual = np.hypot(x_arr - pred_x, y_arr - pred_y)
+            speed = (float(cx[0]) ** 2 + float(cy[0]) ** 2) ** 0.5 * 3.6
+            return speed, residual
+
+        speed_kmh, residual = _fit_speed(t, xs, ys)
+
+        # If the newest point is far off the local trend, treat this estimate
+        # as untrustworthy rather than emitting a spike.
+        if residual[-1] > self._SPEED_MAX_RESIDUAL_M:
+            return None
+
+        # One-pass interior outlier rejection for tracker jumps.
+        if len(filtered) > self._SPEED_MIN_POINTS:
+            worst_idx = int(np.argmax(residual))
+            if 0 < worst_idx < len(filtered) - 1 and residual[worst_idx] > self._SPEED_MAX_RESIDUAL_M:
+                keep = np.ones(len(filtered), dtype=bool)
+                keep[worst_idx] = False
+                speed_kmh, residual = _fit_speed(t[keep], xs[keep], ys[keep])
+                if residual[-1] > self._SPEED_MAX_RESIDUAL_M:
+                    return None
+
+        if not np.isfinite(speed_kmh):
+            return None
+        if speed_kmh < 0 or speed_kmh > self._MAX_PHYSICAL_SPEED:
+            return None
+        return float(speed_kmh)
 
     # ------------------------------------------------------------------
     # Bounce deduplication (PeakBounceDetector and Hybrid/Enhanced fire
@@ -1872,16 +2023,15 @@ class Orchestrator:
                 if b["frame"] in self._emitted_bounce_frames:
                     continue
                 self._emitted_bounce_frames.add(b["frame"])
-                self._live_bounces.append(b)
-                self._debug_record_bounce(b)
-                # No 3D push for median_bg bounces (speed=0)
+                self._record_live_bounce_locked(
+                    self._normalize_live_bounce_dict(b, fallback_ts=now, fallback_speed_kmh=0),
+                    debug_source=b,
+                )
                 logger.info(
                     "Bounce: frame=%d z=%.3f (%.2f, %.2f) %s",
                     b["frame"], b["z"], b["x"], b["y"],
                     "IN" if b["in_court"] else "OUT",
                 )
-            if len(self._live_bounces) > 50:
-                self._live_bounces = self._live_bounces[-50:]
 
     def _smooth_latest(self, pt: dict) -> dict | None:
         """Add a raw 3D point to the SG buffer and return a smoothed point.
@@ -1962,6 +2112,7 @@ class Orchestrator:
             self._rally_raw_buffer.clear()
 
             # Speed / motion state so the next session doesn't see stale prev_3d
+            self._speed_points.clear()
             self._speed_buffer.clear()
             self._sg_buffer.clear()
             self._prev_3d = None
@@ -2173,7 +2324,7 @@ class Orchestrator:
                         logger.info("3D display connected: %s", self._ws_url)
                         while self._ws_enabled and not self._stopped.is_set():
                             if self._ws_bounce_queue:
-                                bd = self._ws_bounce_queue.pop(0)
+                                bd = self._ws_bounce_queue[0]
                                 msg = json.dumps({
                                     "msg": {
                                         "message": "bounce_data",
@@ -2188,6 +2339,8 @@ class Orchestrator:
                                     }
                                 })
                                 await ws.send(msg)
+                                if self._ws_bounce_queue and self._ws_bounce_queue[0] is bd:
+                                    self._ws_bounce_queue.popleft()
                                 logger.info("3D display: sent bounce x=%.3f y=%.3f speed=%.0f",
                                            bd["x"], bd["y"], bd["speed"])
                             else:

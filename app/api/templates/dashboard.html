@@ -1861,7 +1861,10 @@ async function poll(){
     // Extract analytics data from status
     const analytics=d.analytics||{};
     const recentBounces=analytics.recent_bounces||[];
+    const totalBounces=analytics.total_bounces ?? recentBounces.length;
     const rallyState=analytics.rally_state||{};
+    const latestCrossing=analytics.latest_net_crossing||null;
+    const lastFrameSpeed=Number(analytics.last_frame_speed_kmh||0);
 
     const b=d.latest_ball_3d;
     const latestDets=d.latest_detections||null;
@@ -1872,13 +1875,23 @@ async function poll(){
     const stateEl=document.getElementById('rally-state');
     const strokeEl=document.getElementById('stroke-count');
     const bounceEl=document.getElementById('bounce-count');
+    const speedEl=document.getElementById('ball-speed');
     if(stateEl){
       const st=rallyState.state||'idle';
       stateEl.textContent=st;
       stateEl.style.color=st==='rally'?'#4caf50':'#94a3b8';
     }
     if(strokeEl) strokeEl.textContent=rallyState.stroke_count||0;
-    if(bounceEl) bounceEl.textContent=recentBounces.length||0;
+    if(bounceEl) bounceEl.textContent=totalBounces||0;
+    if(speedEl){
+      let speedToShow=0;
+      if(latestCrossing && Number.isFinite(Number(latestCrossing.speed_kmh||0))){
+        const crossingAge=(Date.now()/1000)-Number(latestCrossing.timestamp||0);
+        if(crossingAge <= 3.0) speedToShow=Number(latestCrossing.speed_kmh||0);
+      }
+      if(speedToShow <= 0 && Number.isFinite(lastFrameSpeed)) speedToShow=lastFrameSpeed;
+      speedEl.textContent=speedToShow > 0 ? `${Math.round(speedToShow)} km/h` : '- km/h';
+    }
   }catch(e){console.error(e)}
 }
 
