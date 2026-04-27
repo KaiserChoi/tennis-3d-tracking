@@ -691,7 +691,49 @@ class Orchestrator:
                         # rally_result (boundary signal) is no longer produced —
                         # end-markers, auto-report, and rally export all were
                         # tied to the removed RallyStateMachine.
+                        _prev_state_str = self._rally_tracker._state.state
+                        _prev_completed_count = len(self._rally_tracker.get_completed_rallies())
                         self._rally_tracker.update(pt, accepted_bounce)
+                        _curr_state_str = self._rally_tracker._state.state
+                        if _prev_state_str == "idle" and _curr_state_str == "rally":
+                            # Fresh rally boundary: drop any stale idle frames.
+                            # The current frame gets appended below, so the
+                            # first crossing frame is retained.
+                            self._rally_raw_buffer.clear()
+                        if _prev_state_str == "rally" and _curr_state_str == "idle":
+                            _completed = self._rally_tracker.get_completed_rallies()
+                            if len(_completed) > _prev_completed_count:
+                                _frames_snapshot = list(self._rally_raw_buffer)
+                                self._rally_raw_buffer.clear()
+                                if _frames_snapshot:
+                                    _last_dict = _completed[-1]
+
+                                    class _RallyProxy:
+                                        pass
+
+                                    _proxy = _RallyProxy()
+                                    _proxy.rally_id = _last_dict.get(
+                                        "rally_id", self._rally_completed_count + 1
+                                    )
+                                    _proxy.start_time = now - _last_dict.get("duration", 0.0)
+                                    _proxy.end_time = now
+                                    threading.Thread(
+                                        target=self._export_rally,
+                                        args=(_proxy, _frames_snapshot),
+                                        daemon=True,
+                                        name=f"rally-export-{_proxy.rally_id}",
+                                    ).start()
+                                self._rally_completed_count += 1
+                                if (
+                                    self._rally_report_interval > 0
+                                    and self._rally_completed_count - self._last_report_rally_count
+                                    >= self._rally_report_interval
+                                ):
+                                    threading.Thread(
+                                        target=self._auto_generate_report,
+                                        daemon=True,
+                                        name="auto-generate-report",
+                                    ).start()
                         _tri_bounce = accepted_bounce
 
                         if accepted_bounce is not None:
@@ -748,6 +790,47 @@ class Orchestrator:
 
             if not got_any:
                 time.sleep(0.001)  # 1ms — fast response to new detections
+
+                # Timeout-triggered rally end: when no new points arrive,
+                # RallyTracker only transitions inside get_state(). Poll here
+                # so mini-program export still fires even if the rally ends on
+                # silence rather than on a new frame.
+                with self._analytics_lock:
+                    if self._rally_tracker._state.state == "rally":
+                        _after = self._rally_tracker.get_state().state
+                        if _after == "idle":
+                            _frames_snapshot = list(self._rally_raw_buffer)
+                            self._rally_raw_buffer.clear()
+                            _completed = self._rally_tracker.get_completed_rallies()
+                            if _completed and _frames_snapshot:
+                                _last_dict = _completed[-1]
+
+                                class _RallyProxy:
+                                    pass
+
+                                _proxy = _RallyProxy()
+                                _proxy.rally_id = _last_dict.get(
+                                    "rally_id", self._rally_completed_count + 1
+                                )
+                                _proxy.end_time = time.time()
+                                _proxy.start_time = _proxy.end_time - _last_dict.get("duration", 0.0)
+                                threading.Thread(
+                                    target=self._export_rally,
+                                    args=(_proxy, _frames_snapshot),
+                                    daemon=True,
+                                    name=f"rally-export-timeout-{_proxy.rally_id}",
+                                ).start()
+                            self._rally_completed_count += 1
+                            if (
+                                self._rally_report_interval > 0
+                                and self._rally_completed_count - self._last_report_rally_count
+                                >= self._rally_report_interval
+                            ):
+                                threading.Thread(
+                                    target=self._auto_generate_report,
+                                    daemon=True,
+                                    name="auto-generate-report-timeout",
+                                ).start()
 
         self._triangulation_active = False
         # Close tracking JSONL
