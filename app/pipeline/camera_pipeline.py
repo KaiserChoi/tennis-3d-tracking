@@ -94,6 +94,7 @@ def run_pipeline(
         log.info("Pipeline running")
 
         frame_buffer: list = []
+        raw_frame_buffer: list = []
         frame_id_buffer: list[int] = []
         capture_ts_buffer: list[float] = []  # wall-clock per frame
         last_frame_id = -1
@@ -154,20 +155,21 @@ def run_pipeline(
                 continue
             last_frame_id = frame_id
             capture_ts = time.time()  # wall-clock at frame arrival
+            raw_frame = frame.copy()
 
             # Send clean frame to JPEG thread (before OSD mask)
             if frame_queue is not None:
                 is_recording = status_dict.get("recording_enabled", False)
                 if is_recording or frame_id % 4 == 0:
                     try:
-                        _jpeg_q.put_nowait((frame.copy(), is_recording))
+                        _jpeg_q.put_nowait((raw_frame.copy(), is_recording))
                     except _queue.Full:
                         pass
 
             # Player pose detection (clean frame, before OSD mask)
             if player_detector is not None:
                 try:
-                    player_dets = player_detector.detect(frame)
+                    player_dets = player_detector.detect(raw_frame)
                     if player_dets:
                         player_msg = {
                             "type": "player_pose",
@@ -185,9 +187,11 @@ def run_pipeline(
                     log.debug("Player detection error: %s", e)
 
             # Mask OSD for inference only (after JPEG thread got clean ref)
+            frame = raw_frame.copy()
             frame[0:41, 0:603] = 0
 
             frame_buffer.append(frame)
+            raw_frame_buffer.append(raw_frame)
             frame_id_buffer.append(frame_id)
             capture_ts_buffer.append(capture_ts)
 
@@ -197,6 +201,7 @@ def run_pipeline(
             # 推理开关关闭或模型未加载时直接跳过 GPU 调用
             if detector is None or not status_dict.get("inference_enabled", True):
                 frame_buffer.clear()
+                raw_frame_buffer.clear()
                 frame_id_buffer.clear()
                 capture_ts_buffer.clear()
                 continue
@@ -207,7 +212,9 @@ def run_pipeline(
             except Exception as e:
                 log.error("Inference error: %s", e)
                 frame_buffer.clear()
+                raw_frame_buffer.clear()
                 frame_id_buffer.clear()
+                capture_ts_buffer.clear()
                 continue
 
             if isinstance(heatmaps, dict):
@@ -271,8 +278,12 @@ def run_pipeline(
                     status_dict["last_detection_time"] = time.time()
             else:
                 # ---- TrackNet / HRNet path: heatmaps → BallTracker ----
-                for i in range(min(frames_out, len(heatmaps))):
-                    blobs = tracker.process_heatmap_multi(heatmaps[i], max_blobs=2)
+                n_out = min(frames_out, len(heatmaps))
+                blobs_by_frame = [
+                    tracker.process_heatmap_multi(heatmaps[i], max_blobs=4)
+                    for i in range(n_out)
+                ]
+                for i, blobs in enumerate(blobs_by_frame):
                     if not blobs:
                         continue
                     frame_capture_ts = capture_ts_buffer[i] if i < len(capture_ts_buffer) else capture_ts_buffer[0]
@@ -315,6 +326,7 @@ def run_pipeline(
                 fps_time = now
 
             frame_buffer.clear()
+            raw_frame_buffer.clear()
             frame_id_buffer.clear()
             capture_ts_buffer.clear()
 

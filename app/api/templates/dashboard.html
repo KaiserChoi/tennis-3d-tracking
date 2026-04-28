@@ -1137,21 +1137,204 @@ const _VIDEO_DELAY_S = 1;
 // Draws tracked ball position on the MJPEG stream overlay canvas.
 // Source frame is 1920x1080; canvas is CSS-scaled to fit vid-cell.
 const _FRAME_W=1920, _FRAME_H=1080;
-const _ballTrail={}; // cam -> [{x,y,t}]
-const _TRAIL_MAX=15;
+const _ballTrail={}; // cam -> [{x,y,t}] in overlay CSS pixels
+const _ballOverlayRender={}; // cam -> eased render state
+const _TRAIL_MAX=10;
+const _BALL_HISTORY_MAX_MS=5000;
+const _BALL_STALE_S=Math.max(2.5,_VIDEO_DELAY_S+1.5);
+const _TRAIL_TTL_MS=1300;
+const _TRAIL_SAMPLE_MS=48;
+const _OVERLAY_FRAME_MS=33;
+let _ballOverlayLastPaint=0;
+const _ballOverlayHistory={}; // cam -> [{receivedAt, det}]
+
+function _isFinitePoint(x,y){
+  return Number.isFinite(Number(x))&&Number.isFinite(Number(y));
+}
+
+function _normalizeOverlayDet(cam,det){
+  if(!det||!_isFinitePoint(det.pixel_x,det.pixel_y)) return null;
+  const ts=Number(det.timestamp||0);
+  if(ts>0 && (Date.now()/1000-ts)>_BALL_STALE_S) return null;
+  return {
+    camera_name:cam,
+    pixel_x:Number(det.pixel_x),
+    pixel_y:Number(det.pixel_y),
+    timestamp:ts||null,
+    capture_ts:Number(det.capture_ts||0)||null,
+    frame_index:det.frame_index,
+    confidence:Number(det.confidence||det.blob_sum||0)||0,
+    candidates:Array.isArray(det.candidates)
+      ?det.candidates.filter(c=>_isFinitePoint(c.pixel_x,c.pixel_y)).slice(0,4)
+      :[]
+  };
+}
+
+function rememberBallOverlaySnapshot(latestDets){
+  const now=Date.now();
+  for(const [cam,det] of Object.entries(latestDets||{})){
+    const clean=_normalizeOverlayDet(cam,det);
+    if(!clean) continue;
+    const hist=_ballOverlayHistory[cam]||(_ballOverlayHistory[cam]=[]);
+    const last=hist[hist.length-1];
+    const same=last&&last.det.timestamp===clean.timestamp&&
+      last.det.frame_index===clean.frame_index&&
+      Math.abs(last.det.pixel_x-clean.pixel_x)<0.01&&
+      Math.abs(last.det.pixel_y-clean.pixel_y)<0.01;
+    if(!same) hist.push({receivedAt:now,det:clean});
+    while(hist.length&&now-hist[0].receivedAt>_BALL_HISTORY_MAX_MS) hist.shift();
+  }
+}
+
+function getDelayedBallOverlayDetections(){
+  const target=Date.now()-_VIDEO_DELAY_S*1000;
+  const out={};
+  for(const [cam,hist] of Object.entries(_ballOverlayHistory)){
+    let chosen=null;
+    for(let i=hist.length-1;i>=0;i--){
+      if(hist[i].receivedAt<=target){chosen=hist[i];break;}
+    }
+    if(!chosen&&_VIDEO_DELAY_S<=0&&hist.length) chosen=hist[hist.length-1];
+    if(chosen&&Date.now()-chosen.receivedAt<=_BALL_HISTORY_MAX_MS) out[cam]=chosen.det;
+  }
+  return out;
+}
+
+function _trailMid(a,b){
+  return {x:(a.x+b.x)/2,y:(a.y+b.y)/2};
+}
+
+function _drawCometTrail(ctx,trail,now){
+  const pts=(trail||[]).filter(p=>now-p.t<=_TRAIL_TTL_MS).slice(-_TRAIL_MAX);
+  if(pts.length<2) return;
+
+  ctx.save();
+  ctx.lineCap='round';
+  ctx.lineJoin='round';
+  ctx.globalCompositeOperation='lighter';
+
+  for(let i=1;i<pts.length;i++){
+    const prev=pts[i-1], cur=pts[i], next=pts[i+1]||null;
+    const start=i===1?prev:_trailMid(prev,cur);
+    const end=next?_trailMid(cur,next):cur;
+    const life=Math.max(0,1-(now-cur.t)/_TRAIL_TTL_MS);
+    const order=i/(pts.length-1);
+    const alpha=(0.045+0.34*order)*life;
+    const width=1.2+5.4*order;
+    if(alpha<=0.01) continue;
+
+    // Soft bloom first, then a smaller bright core. This reads as motion,
+    // not as a row of stickers covering the video.
+    ctx.beginPath();
+    ctx.moveTo(start.x,start.y);
+    ctx.quadraticCurveTo(cur.x,cur.y,end.x,end.y);
+    ctx.strokeStyle=`rgba(185,255,72,${alpha*0.28})`;
+    ctx.lineWidth=width+5.5;
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(start.x,start.y);
+    ctx.quadraticCurveTo(cur.x,cur.y,end.x,end.y);
+    ctx.strokeStyle=`rgba(218,255,112,${alpha})`;
+    ctx.lineWidth=width;
+    ctx.stroke();
+  }
+
+  // Tiny fading beads give direction without blocking the ball.
+  for(let i=0;i<pts.length-1;i++){
+    const p=pts[i];
+    const order=(i+1)/(pts.length-1);
+    const life=Math.max(0,1-(now-p.t)/_TRAIL_TTL_MS);
+    const alpha=(0.03+0.17*order)*life;
+    if(alpha<=0.01) continue;
+    ctx.beginPath();
+    ctx.arc(p.x,p.y,0.8+2.0*order,0,Math.PI*2);
+    ctx.fillStyle=`rgba(226,255,130,${alpha})`;
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+function _updateBallRenderState(cam,bx,by,cw,ch,now){
+  const state=_ballOverlayRender[cam]||(_ballOverlayRender[cam]={});
+  if(state.cw!==cw||state.ch!==ch){
+    state.x=bx; state.y=by; state.lastDraw=now; state.cw=cw; state.ch=ch;
+    _ballTrail[cam]=[{x:bx,y:by,t:now}];
+    return state;
+  }
+
+  if(!Number.isFinite(state.x)||!Number.isFinite(state.y)){
+    state.x=bx; state.y=by;
+  }else{
+    const dt=Math.min(120,Math.max(16,now-(state.lastDraw||now)));
+    const dist=Math.hypot(bx-state.x,by-state.y);
+    const ease=dist>140?0.42:(1-Math.exp(-dt/82));
+    state.x+=((bx-state.x)*ease);
+    state.y+=((by-state.y)*ease);
+  }
+  state.lastDraw=now;
+  state.cw=cw;
+  state.ch=ch;
+
+  const trail=_ballTrail[cam]||(_ballTrail[cam]=[]);
+  const last=trail[trail.length-1];
+  const movedSinceSample=last?Math.hypot(last.x-state.x,last.y-state.y):Infinity;
+  const stillChasingTarget=Math.hypot(bx-state.x,by-state.y)>1.2;
+  if(!last||movedSinceSample>2.2||(stillChasingTarget&&now-last.t>_TRAIL_SAMPLE_MS)){
+    trail.push({x:state.x,y:state.y,t:now});
+  }
+  while(trail.length>_TRAIL_MAX) trail.shift();
+  while(trail.length&&now-trail[0].t>_TRAIL_TTL_MS) trail.shift();
+  return state;
+}
+
+function _drawBallMarker(ctx,bx,by){
+  // Hollow marker: visible on dark/bright video, but it does not cover the ball.
+  ctx.save();
+  ctx.lineCap='round';
+  ctx.globalCompositeOperation='source-over';
+  ctx.shadowColor='rgba(0,0,0,.58)';
+  ctx.shadowBlur=5;
+
+  ctx.beginPath();
+  ctx.arc(bx,by,7.2,0,Math.PI*2);
+  ctx.strokeStyle='rgba(220,255,91,.82)';
+  ctx.lineWidth=1.55;
+  ctx.stroke();
+
+  ctx.shadowBlur=0;
+  ctx.beginPath();
+  ctx.arc(bx,by,10.5,0,Math.PI*2);
+  ctx.strokeStyle='rgba(220,255,91,.16)';
+  ctx.lineWidth=3.2;
+  ctx.stroke();
+
+  ctx.strokeStyle='rgba(255,255,255,.62)';
+  ctx.lineWidth=1;
+  ctx.beginPath();
+  ctx.moveTo(bx-11.5,by-6.5);ctx.lineTo(bx-11.5,by-11.5);ctx.lineTo(bx-6.5,by-11.5);
+  ctx.moveTo(bx+11.5,by+6.5);ctx.lineTo(bx+11.5,by+11.5);ctx.lineTo(bx+6.5,by+11.5);
+  ctx.stroke();
+  ctx.restore();
+}
 
 function drawBallOverlays(detections){
+  const now=Date.now();
   document.querySelectorAll('canvas.ball-overlay').forEach(cvs=>{
     const cam=cvs.dataset.cam;
     const cell=cvs.parentElement;
     const img=cell.querySelector('img');
     if(!img) return;
 
-    // Size canvas to match cell pixel size
+    // Size canvas to match cell CSS pixels, with DPR backing for crisp lines.
     const cw=cell.clientWidth, ch=cell.clientHeight;
-    if(cvs.width!==cw||cvs.height!==ch){cvs.width=cw;cvs.height=ch;}
+    const dpr=window.devicePixelRatio||1;
+    const bw=Math.max(1,Math.round(cw*dpr));
+    const bh=Math.max(1,Math.round(ch*dpr));
+    if(cvs.width!==bw||cvs.height!==bh){cvs.width=bw;cvs.height=bh;}
 
     const ctx=cvs.getContext('2d');
+    ctx.setTransform(dpr,0,0,dpr,0,0);
     ctx.clearRect(0,0,cw,ch);
 
     // Compute scale: img uses object-fit:contain inside cell
@@ -1172,37 +1355,36 @@ function drawBallOverlays(detections){
     function py(y){return oy+y*sy;}
 
     const det=detections&&detections[cam];
-    if(!det||det.pixel_x==null) return;
-
-    const bx=px(det.pixel_x), by=py(det.pixel_y);
-
-    // Update trail
-    if(!_ballTrail[cam]) _ballTrail[cam]=[];
-    const trail=_ballTrail[cam];
-    trail.push({x:bx,y:by,t:Date.now()});
-    if(trail.length>_TRAIL_MAX) trail.shift();
-
-    // Draw trail (fading)
-    if(trail.length>1){
-      for(let i=1;i<trail.length;i++){
-        const alpha=i/trail.length*0.6;
-        const r=1+i/trail.length*2;
-        ctx.beginPath();ctx.arc(trail[i].x,trail[i].y,r,0,Math.PI*2);
-        ctx.fillStyle=`rgba(0,255,0,${alpha})`;ctx.fill();
+    if(!det||!_isFinitePoint(det.pixel_x,det.pixel_y)){
+      if(_ballTrail[cam]){
+        _ballTrail[cam]=_ballTrail[cam].filter(p=>now-p.t<_TRAIL_TTL_MS);
+        _drawCometTrail(ctx,_ballTrail[cam],now);
       }
+      return;
     }
 
-    // Draw ball marker — green circle + crosshair
-    ctx.beginPath();ctx.arc(bx,by,10,0,Math.PI*2);
-    ctx.strokeStyle='#0f0';ctx.lineWidth=2;ctx.stroke();
-    ctx.beginPath();ctx.arc(bx,by,3,0,Math.PI*2);
-    ctx.fillStyle='#0f0';ctx.fill();
-    // Crosshair
-    ctx.beginPath();ctx.moveTo(bx-15,by);ctx.lineTo(bx-6,by);ctx.stroke();
-    ctx.beginPath();ctx.moveTo(bx+6,by);ctx.lineTo(bx+15,by);ctx.stroke();
-    ctx.beginPath();ctx.moveTo(bx,by-15);ctx.lineTo(bx,by-6);ctx.stroke();
-    ctx.beginPath();ctx.moveTo(bx,by+6);ctx.lineTo(bx,by+15);ctx.stroke();
+    const bx=px(det.pixel_x), by=py(det.pixel_y);
+    if(bx<ox-40||bx>ox+_FRAME_W*sx+40||by<oy-40||by>oy+_FRAME_H*sy+40) return;
+    const render=_updateBallRenderState(cam,bx,by,cw,ch,now);
+
+    // Candidate ghosts stay tiny so they don't compete with the real ball.
+    (det.candidates||[]).slice(1).forEach((c,idx)=>{
+      const cx=px(Number(c.pixel_x)), cy=py(Number(c.pixel_y));
+      ctx.beginPath();ctx.arc(cx,cy,2.5+idx*0.5,0,Math.PI*2);
+      ctx.strokeStyle='rgba(255,210,90,.24)';ctx.lineWidth=1;ctx.stroke();
+    });
+
+    _drawCometTrail(ctx,_ballTrail[cam],now);
+    _drawBallMarker(ctx,render.x,render.y);
   });
+}
+
+function _ballOverlayLoop(ts){
+  if(!ts||ts-_ballOverlayLastPaint>=_OVERLAY_FRAME_MS){
+    _ballOverlayLastPaint=ts||performance.now();
+    drawBallOverlays(getDelayedBallOverlayDetections());
+  }
+  requestAnimationFrame(_ballOverlayLoop);
 }
 
 
@@ -1868,6 +2050,7 @@ async function poll(){
 
     const b=d.latest_ball_3d;
     const latestDets=d.latest_detections||null;
+    rememberBallOverlaySnapshot(latestDets);
     drawCourt(document.getElementById('minimap'),recentBounces);
     updateGTStats(recentBounces);
 
@@ -1897,6 +2080,7 @@ async function poll(){
 
 // Init
 drawCourt(document.getElementById('minimap'),[]);
+requestAnimationFrame(_ballOverlayLoop);
 setInterval(poll,500);
 syncRecordingStatus();
 setInterval(syncRecordingStatus,2000);

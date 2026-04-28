@@ -74,6 +74,11 @@ class Orchestrator:
         self._last_tri_pair: tuple = (None, None)  # (d1.capture_ts, d2.capture_ts) to dedup
         self._det_queues: dict[str, list] = {}  # per-camera detection queues
         self._live_matcher: Optional[MultiBlobMatcher] = None
+        self._candidate_continuity: dict[str, dict] = {}
+        self._LIVE_MATCHER_CANDIDATES = 2
+        self._CANDIDATE_MAX_JUMP_PX = 120.0
+        self._CANDIDATE_CONF_RATIO = 0.35
+        self._CANDIDATE_RANK_PENALTY_PX = 8.0
         self._consumer_thread: Optional[threading.Thread] = None
         self._stopped = threading.Event()
         self._inference_enabled: bool = True  # 全局推理开关
@@ -252,6 +257,118 @@ class Orchestrator:
                 logger.warning("Calibration file not found: %s, using config positions", cal_path)
         return positions
 
+    @staticmethod
+    def _candidate_confidence(candidate: dict) -> float:
+        try:
+            return float(candidate.get("blob_sum", candidate.get("confidence", 0.0)) or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _apply_live_candidate_continuity(
+        self,
+        cam_name: str,
+        det: dict,
+        max_candidates: int | None = None,
+    ) -> dict:
+        """Prefer the most temporally plausible 2D blob before 3D matching.
+
+        TrackNet sometimes ranks a static distractor or player-edge blob above
+        the real ball. We keep the detector's top-1 unless it makes an
+        implausible pixel jump and another top-k candidate follows the recent
+        per-camera motion well enough. The 3D matcher still receives only the
+        top candidates, so this improves ordering without widening the noisy
+        cross-camera search space.
+        """
+        candidates_in = det.get("candidates") or []
+        if not candidates_in:
+            return det
+
+        max_candidates = max_candidates or self._LIVE_MATCHER_CANDIDATES
+        candidates = [
+            dict(c)
+            for c in candidates_in
+            if c.get("pixel_x") is not None and c.get("pixel_y") is not None
+        ]
+        if not candidates:
+            return det
+
+        state = self._candidate_continuity.get(cam_name)
+        chosen_idx = 0
+
+        try:
+            frame_index = int(det.get("frame_index")) if det.get("frame_index") is not None else None
+        except (TypeError, ValueError):
+            frame_index = None
+
+        if state is not None and frame_index is not None and state.get("frame_index") is not None:
+            gap = frame_index - int(state["frame_index"])
+            if 0 < gap <= 10:
+                last_px = np.array([state["pixel_x"], state["pixel_y"]], dtype=np.float64)
+                velocity = state.get("velocity_px_per_frame")
+                if velocity is not None:
+                    pred_px = last_px + np.array(velocity, dtype=np.float64) * gap
+                else:
+                    pred_px = last_px
+
+                dists = []
+                for idx, cand in enumerate(candidates):
+                    px = np.array([cand["pixel_x"], cand["pixel_y"]], dtype=np.float64)
+                    dist = float(np.linalg.norm(px - pred_px))
+                    score = dist + self._CANDIDATE_RANK_PENALTY_PX * idx
+                    dists.append((score, dist, idx))
+
+                top_score, top_dist, _ = dists[0]
+                best_score, best_dist, best_idx = min(dists, key=lambda item: item[0])
+                max_jump = self._CANDIDATE_MAX_JUMP_PX * gap
+                if best_idx != 0 and top_dist > max_jump and best_dist <= max_jump:
+                    top_conf = self._candidate_confidence(candidates[0])
+                    best_conf = self._candidate_confidence(candidates[best_idx])
+                    if best_score < top_score and best_conf >= top_conf * self._CANDIDATE_CONF_RATIO:
+                        chosen_idx = best_idx
+
+        if chosen_idx:
+            chosen = candidates.pop(chosen_idx)
+            candidates.insert(0, chosen)
+
+        candidates = candidates[:max_candidates]
+        selected = candidates[0]
+        new_det = dict(det)
+        new_det["candidates"] = candidates
+        new_det["pixel_x"] = selected["pixel_x"]
+        new_det["pixel_y"] = selected["pixel_y"]
+        if selected.get("world_x") is not None:
+            new_det["x"] = selected["world_x"]
+            new_det["world_x"] = selected["world_x"]
+        elif selected.get("x") is not None:
+            new_det["x"] = selected["x"]
+        if selected.get("world_y") is not None:
+            new_det["y"] = selected["world_y"]
+            new_det["world_y"] = selected["world_y"]
+        elif selected.get("y") is not None:
+            new_det["y"] = selected["y"]
+        conf = self._candidate_confidence(selected)
+        new_det["confidence"] = conf
+        new_det["blob_sum"] = conf
+
+        px_now = np.array([selected["pixel_x"], selected["pixel_y"]], dtype=np.float64)
+        velocity = None
+        if state is not None and frame_index is not None and state.get("frame_index") is not None:
+            gap = frame_index - int(state["frame_index"])
+            if 0 < gap <= 10:
+                last_px = np.array([state["pixel_x"], state["pixel_y"]], dtype=np.float64)
+                displacement = px_now - last_px
+                if float(np.linalg.norm(displacement)) <= self._CANDIDATE_MAX_JUMP_PX * gap * 1.5:
+                    velocity = (displacement / gap).tolist()
+
+        self._candidate_continuity[cam_name] = {
+            "pixel_x": float(selected["pixel_x"]),
+            "pixel_y": float(selected["pixel_y"]),
+            "frame_index": frame_index,
+            "capture_ts": new_det.get("capture_ts", new_det.get("timestamp")),
+            "velocity_px_per_frame": velocity,
+        }
+        return new_det
+
     def start_pipeline(self, name: str) -> None:
         if name not in self._handles:
             raise ValueError(f"Unknown pipeline: {name}")
@@ -305,6 +422,7 @@ class Orchestrator:
         )
         handle.process.start()
         logger.info("[%s] Pipeline process started (pid=%d)", name, handle.process.pid)
+        self._candidate_continuity.pop(name, None)
 
         # Ensure consumer thread is running.
         if self._consumer_thread is None or not self._consumer_thread.is_alive():
@@ -327,6 +445,7 @@ class Orchestrator:
         if handle.status_dict is not None:
             handle.status_dict["state"] = "stopped"
         self._latest_frames.pop(name, None)
+        self._candidate_continuity.pop(name, None)
         logger.info("[%s] Pipeline stopped", name)
 
         # Auto-save debug output if there's data
@@ -413,10 +532,15 @@ class Orchestrator:
                                 got_any = True
                                 continue
 
-                            self._latest_detections[name] = det
                             # Queue all detections for triangulation (not just latest)
                             if name in tri_cams:
+                                det = self._apply_live_candidate_continuity(
+                                    name,
+                                    det,
+                                    max_candidates=self._LIVE_MATCHER_CANDIDATES,
+                                )
                                 self._det_queues.setdefault(name, []).append(det)
+                            self._latest_detections[name] = det
                             if name.startswith("_video_test"):
                                 cam = det.get("camera_name", "unknown")
                                 self._video_test_detections.setdefault(cam, []).append(det)
@@ -1493,6 +1617,10 @@ class Orchestrator:
                 "y": det.get("y"),
                 "pixel_x": det.get("pixel_x"),
                 "pixel_y": det.get("pixel_y"),
+                "timestamp": det.get("timestamp"),
+                "capture_ts": det.get("capture_ts"),
+                "frame_index": det.get("frame_index"),
+                "confidence": det.get("confidence", det.get("blob_sum")),
                 "candidates": [
                     {"x": float(c["x"]), "y": float(c["y"]),
                      "pixel_x": float(c.get("pixel_x", 0)),
@@ -2239,6 +2367,7 @@ class Orchestrator:
             self._last_bounce_ts = 0.0
             self._prev_3d = None
             self._last_tri_pair = None
+            self._candidate_continuity.clear()
             self._conf_history.clear()
             if self._live_matcher is not None:
                 self._live_matcher.reset()

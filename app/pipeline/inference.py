@@ -172,14 +172,17 @@ class TrackNetDetector:
         # Background (median) frame — (3, H, W) float32 in [0, 1]
         self._bg_frame: Optional[np.ndarray] = None
         self._video_median_computed = False
+        self._static_median_loaded = False
 
         # Try loading pre-computed median from src/bg_median_{camera}.png
         self._try_load_static_median()
 
-        # Running median: large buffer, background thread updates every 5 min
+        # Running median: static background is the warm start; live updates are
+        # intentionally conservative because first-line court conditions matter
+        # more than offline GT sweeps for this parameter.
         self._bg_buffer: list[np.ndarray] = []
         self._bg_max_frames: int = 200
-        self._bg_update_interval: int = 300  # seconds
+        self._bg_update_interval: int = 60  # seconds
         self._bg_last_update: float = 0
         self._bg_thread = None
 
@@ -223,7 +226,9 @@ class TrackNetDetector:
             img = cv2.resize(img, (self.input_w, self.input_h))
             img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
             self._bg_frame = img.astype(np.float32).transpose(2, 0, 1) / 255.0
-            self._video_median_computed = True
+            # Static medians are a warm start for live cameras; keep the
+            # running median enabled so lighting changes can adapt.
+            self._static_median_loaded = True
             logger.info("Loaded static median background: %s", path)
             return True
         except Exception as e:
