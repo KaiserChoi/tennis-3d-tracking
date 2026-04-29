@@ -69,6 +69,30 @@ class ExportConfig(BaseModel):
     endpoint: str = "https://tennisync.top/api/admin/SpaceParties/reportData"
 
 
+class HybridBounceConfig(BaseModel):
+    z_max: float = 0.8
+    min_seg_len: int = 8
+    min_dense: int = 8
+    dense_range: int = 12
+    min_speed: float = 3.0
+    max_gap_s: float = 0.6
+    v_window: int = 8
+    half_wins: list[int] = [4, 6, 8]
+    cooldown_frames: int = 12
+
+
+class BounceSmoothingConfig(BaseModel):
+    sg_window: int = 11
+    sg_poly: int = 3
+    max_frame_gap: int = 3
+    max_gap_s: float = 0.6
+
+
+class BounceDetectionConfig(BaseModel):
+    hybrid: HybridBounceConfig = HybridBounceConfig()
+    smoothing: BounceSmoothingConfig = BounceSmoothingConfig()
+
+
 class AppConfig(BaseModel):
     cameras: dict[str, CameraConfig]
     model: ModelConfig
@@ -80,6 +104,7 @@ class AppConfig(BaseModel):
     player_detection: PlayerDetectionConfig = PlayerDetectionConfig()
     serial_numbers: dict[str, str] = {}
     export: ExportConfig = ExportConfig()
+    bounce_detection: BounceDetectionConfig = BounceDetectionConfig()
 
 
 def load_config(config_path: str = "config.yaml") -> AppConfig:

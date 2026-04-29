@@ -59,6 +59,8 @@ class _PipelineHandle:
 class Orchestrator:
     """Manages camera pipelines, triangulation, and exposes state for the API."""
 
+    _LIVE_BOUNCE_HISTORY_LIMIT = 500
+
     def __init__(self, config: AppConfig):
         self.config = config
         self._handles: dict[str, _PipelineHandle] = {}
@@ -133,11 +135,18 @@ class Orchestrator:
         # segment on any burst of missed matches; live needs ~0.6s to absorb
         # typical drops. Sizes also relaxed so the segment-length &
         # density gates don't swallow the remaining segments.
+        bounce_cfg = self.config.bounce_detection
+        hybrid_cfg = bounce_cfg.hybrid
         self._hybrid_bounce = HybridBounceDetector(
-            min_seg_len=8,      # was 15
-            min_dense=8,        # was 20
-            dense_range=12,     # was 20
-            max_gap_s=0.6,      # was 0.2 (offline default)
+            z_max=hybrid_cfg.z_max,
+            min_seg_len=hybrid_cfg.min_seg_len,
+            min_dense=hybrid_cfg.min_dense,
+            dense_range=hybrid_cfg.dense_range,
+            min_speed=hybrid_cfg.min_speed,
+            max_gap_s=hybrid_cfg.max_gap_s,
+            v_window=hybrid_cfg.v_window,
+            half_wins=tuple(hybrid_cfg.half_wins),
+            cooldown_frames=hybrid_cfg.cooldown_frames,
         )
         self._bounce_detector = PeakBounceDetector(batch_size=10)   # eval only
         # RallyStateMachine (serve rules, PENDING, DOUBLE_FAULT, LET, ...) was
@@ -150,6 +159,7 @@ class Orchestrator:
         # batch analytics (run_batch_analytics, FusionCoordinator).
         self._rally_tracker = RallyTracker()
         self._live_bounces: list[dict] = []   # real Hybrid bounces only
+        self._total_live_bounces: int = 0
         self._peak_bounces_eval: list[dict] = []   # sidecar, cap 100
         # Post-filter telemetry — counts per reason (incl. "accepted") so we
         # can tune thresholds from live data without re-running eval.
@@ -175,10 +185,11 @@ class Orchestrator:
 
         # Savitzky-Golay smoothing buffer (matches offline smooth_trajectory_sg)
         self._sg_buffer: list[dict] = []  # [{"pt": raw_3d_point, "cam": cam_dets}]
-        self._sg_window = 11
-        self._sg_poly = 3
-        self._sg_max_gap = 3  # frames gap to split segments
-        self._sg_max_gap_s = 0.6  # live stream is sparse; don't over-split SG segments
+        smooth_cfg = bounce_cfg.smoothing
+        self._sg_window = smooth_cfg.sg_window
+        self._sg_poly = smooth_cfg.sg_poly
+        self._sg_max_gap = smooth_cfg.max_frame_gap  # frames gap to split segments
+        self._sg_max_gap_s = smooth_cfg.max_gap_s  # live stream is sparse; don't over-split SG segments
         self._sg_midpoint_mode = False
         self._sg_switched_to_midpoint = False
         self._live_rallies: list[dict] = []
@@ -1687,8 +1698,8 @@ class Orchestrator:
             return {
                 "rally_state": self._rally_tracker.get_state().to_dict(),
                 "completed_rallies": self._rally_tracker.get_completed_rallies(),
-                "recent_bounces": list(self._live_bounces[-10:]),
-                "total_bounces": len(self._live_bounces),
+                "recent_bounces": list(self._live_bounces),
+                "total_bounces": self._total_live_bounces,
                 "ws_pending_bounces": len(self._ws_bounce_queue),
                 "last_frame_speed_kmh": int(round(float(self._last_frame_speed_kmh or 0.0))),
                 "latest_net_crossing": dict(self._latest_net_crossing) if self._latest_net_crossing else None,
@@ -1757,9 +1768,11 @@ class Orchestrator:
 
     def _record_live_bounce_locked(self, bd: dict, *, debug_source=None) -> None:
         """Publish one accepted bounce to every realtime consumer from one source dict."""
+        self._total_live_bounces += 1
+        bd["sequence"] = self._total_live_bounces
         self._live_bounces.append(bd)
-        if len(self._live_bounces) > 50:
-            self._live_bounces = self._live_bounces[-50:]
+        if len(self._live_bounces) > self._LIVE_BOUNCE_HISTORY_LIMIT:
+            self._live_bounces = self._live_bounces[-self._LIVE_BOUNCE_HISTORY_LIMIT:]
         self._debug_record_bounce(debug_source if debug_source is not None else bd)
         self._enqueue_ws_bounce_locked(bd)
 
@@ -2346,6 +2359,7 @@ class Orchestrator:
 
             # Production + sidecar bounce buffers
             self._live_bounces.clear()
+            self._total_live_bounces = 0
             self._peak_bounces_eval.clear()
             self._post_filter_stats.clear()
 

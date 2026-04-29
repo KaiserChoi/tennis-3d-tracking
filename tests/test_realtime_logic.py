@@ -71,6 +71,53 @@ def test_reset_live_analytics_clears_sg_buffer(orch):
     assert orch._sg_buffer == []
 
 
+def test_orchestrator_uses_bounce_detection_config():
+    config = load_config("config.yaml")
+    config.bounce_detection.hybrid.min_seg_len = 6
+    config.bounce_detection.hybrid.min_dense = 5
+    config.bounce_detection.hybrid.max_gap_s = 0.9
+    config.bounce_detection.hybrid.z_max = 0.9
+    config.bounce_detection.hybrid.min_speed = 2.0
+    config.bounce_detection.hybrid.v_window = 6
+    config.bounce_detection.hybrid.half_wins = [4, 6]
+    config.bounce_detection.smoothing.max_frame_gap = 6
+    config.bounce_detection.smoothing.max_gap_s = 0.9
+
+    orch = Orchestrator(config)
+    try:
+        assert orch._hybrid_bounce._min_seg_len == 6
+        assert orch._hybrid_bounce._min_dense == 5
+        assert orch._hybrid_bounce._max_gap_s == pytest.approx(0.9)
+        assert orch._hybrid_bounce._z_max == pytest.approx(0.9)
+        assert orch._hybrid_bounce._min_speed == pytest.approx(2.0)
+        assert orch._hybrid_bounce._v_window == 6
+        assert orch._hybrid_bounce._half_wins == (4, 6)
+        assert orch._sg_max_gap == 6
+        assert orch._sg_max_gap_s == pytest.approx(0.9)
+    finally:
+        orch._manager.shutdown()
+
+
+def test_live_bounce_history_keeps_true_total_after_rollover(orch):
+    orch._LIVE_BOUNCE_HISTORY_LIMIT = 3
+
+    for i in range(5):
+        orch._record_live_bounce_locked({
+            "timestamp": float(i),
+            "x": float(i),
+            "y": 0.0,
+            "z": 0.0,
+            "in_court": True,
+            "frame_index": i,
+        })
+
+    analytics = orch.get_live_analytics()
+
+    assert analytics["total_bounces"] == 5
+    assert [b["frame_index"] for b in analytics["recent_bounces"]] == [2, 3, 4]
+    assert [b["sequence"] for b in analytics["recent_bounces"]] == [3, 4, 5]
+
+
 def test_post_filter_f2_allows_quick_but_distant_bounce(orch):
     orch._live_bounces = [
         {"timestamp": 10.0, "x": -3.0, "y": -8.0, "side": "near", "in_court": True}
