@@ -39,6 +39,19 @@ BOUNCE_DEDUP_FRAMES = 10
 MAX_BOUNCES_PER_RALLY = 8
 TOP_TRAJECTORIES = 8
 
+# Dashboard reports should reflect what the realtime system actually accepted.
+# The older report path re-detected bounces from z minima only inside detected
+# rally windows; in live 10-minute sessions that badly undercounted bounces.
+LIVE_BOUNCE_RALLY_GAP_SEC = 8.0
+LIVE_BOUNCE_CONTEXT_SEC = 1.0
+# A report rally is stricter than a raw live rally: short 1-3 bounce clusters
+# are often serve faults, pickup/prep bounces, or detector noise in real sessions.
+LIVE_BOUNCE_MIN_RALLY_BOUNCES = 4
+LIVE_BOUNCE_DEDUP_SEC = 0.7
+LIVE_BOUNCE_DEDUP_DIST_M = 1.5
+LIVE_BOUNCE_EXTENDED_X = 6.5
+LIVE_BOUNCE_EXTENDED_Y = 14.5
+
 REPORTS_DIR = Path("reports")
 
 
@@ -49,12 +62,19 @@ REPORTS_DIR = Path("reports")
 def load_tracking(jsonl_path: Path) -> tuple[list[dict], float]:
     """Load JSONL tracking data. Returns (raw_data, t0)."""
     raw = []
-    with open(jsonl_path) as f:
-        for line in f:
+    with open(jsonl_path, encoding="utf-8") as f:
+        for line_no, line in enumerate(f, start=1):
             line = line.strip()
             if not line:
                 continue
-            d = json.loads(line)
+            try:
+                d = json.loads(line)
+            except json.JSONDecodeError:
+                # Report generation can run while the consumer is appending to
+                # the same JSONL. The API fsyncs first, but tolerate a partial
+                # tail line so one bad write boundary does not fail the report.
+                logger.warning("Skipping malformed JSONL line %d in %s", line_no, jsonl_path)
+                continue
             # Skip non-ball rows (e.g. player_pose) — only ball tracking frames have 'ts'
             if d.get("type") == "player_pose":
                 continue
@@ -246,6 +266,156 @@ def judge_in_out(bounces: list[dict]) -> list[dict]:
     return result
 
 
+def _bounce_sort_key(b: dict) -> float:
+    if b.get("ts") is not None:
+        return float(b["ts"])
+    return float(b.get("frame", 0)) / 25.0
+
+
+def _bounce_distance(a: dict, b: dict) -> float:
+    return math.hypot(float(a["x"]) - float(b["x"]), float(a["y"]) - float(b["y"]))
+
+
+def _choose_best_bounce(group: list[dict]) -> dict:
+    return min(group, key=lambda b: (float(b.get("z", 99.0)), _bounce_sort_key(b)))
+
+
+def _first_present(*values):
+    for v in values:
+        if v is not None:
+            return v
+    return None
+
+
+def _dedup_report_bounces(bounces: list[dict]) -> list[dict]:
+    """Deduplicate near-identical bounce reports without suppressing rallies.
+
+    Realtime already has dedup, but dashboard reports may mix live bounce rows
+    and z-min fallback rows. Keep this conservative: only merge events close in
+    both time/frame and court position.
+    """
+    if not bounces:
+        return []
+
+    ordered = sorted(bounces, key=_bounce_sort_key)
+    groups: list[list[dict]] = [[ordered[0]]]
+    for b in ordered[1:]:
+        head = groups[-1][0]
+        dt = abs(_bounce_sort_key(b) - _bounce_sort_key(head))
+        frame_dt = abs(int(b.get("frame", 0)) - int(head.get("frame", 0)))
+        close_time = dt <= LIVE_BOUNCE_DEDUP_SEC or frame_dt <= BOUNCE_DEDUP_FRAMES
+        close_place = _bounce_distance(b, head) <= LIVE_BOUNCE_DEDUP_DIST_M
+        if close_time and close_place:
+            groups[-1].append(b)
+        else:
+            groups.append([b])
+
+    return [_choose_best_bounce(g) for g in groups]
+
+
+def extract_live_bounces(raw_data: list[dict], t0: float) -> list[dict]:
+    """Extract accepted realtime bounces stored in tracking JSONL rows."""
+    bounces: list[dict] = []
+    for idx, row in enumerate(raw_data):
+        b = row.get("bounce")
+        if not isinstance(b, dict):
+            continue
+
+        try:
+            x = float(b["x"])
+            y = float(b["y"])
+            z = float(b.get("z", 0.0))
+        except Exception:
+            continue
+        if not all(math.isfinite(v) for v in (x, y, z)):
+            continue
+
+        # Keep plausible out balls, but drop wild triangulation artifacts.
+        if abs(x) > LIVE_BOUNCE_EXTENDED_X or abs(y) > LIVE_BOUNCE_EXTENDED_Y:
+            continue
+
+        ts_val = _first_present(
+            b.get("timestamp"),
+            b.get("capture_ts"),
+            row.get("capture_ts"),
+            row.get("ts"),
+        )
+        try:
+            ts = float(ts_val)
+        except Exception:
+            continue
+        if not math.isfinite(ts):
+            continue
+
+        frame_val = b.get("frame_index")
+        if frame_val is None:
+            frame_val = row.get("frame", idx)
+        try:
+            frame = int(frame_val)
+        except Exception:
+            frame = idx
+
+        bounces.append({
+            "x": x,
+            "y": y,
+            "z": z,
+            "frame": frame,
+            "ts": ts,
+            "t_rel": ts - t0,
+            "in_court": b.get("in_court"),
+            "source": b.get("source_camera", "live"),
+        })
+
+    return _dedup_report_bounces(bounces)
+
+
+def detect_rallies_from_live_bounces(
+    live_bounces: list[dict],
+    duration: float,
+    gap_sec: float = LIVE_BOUNCE_RALLY_GAP_SEC,
+    min_bounces: int = LIVE_BOUNCE_MIN_RALLY_BOUNCES,
+) -> list[dict]:
+    """Segment rallies from accepted live bounce cadence.
+
+    For amateur play, gaps above ~8s usually mean a ball pickup, serve reset, or
+    next feed. Requiring at least two bounces avoids counting isolated noise or
+    one-off faults as full rallies.
+    """
+    if not live_bounces:
+        return []
+
+    ordered = sorted(live_bounces, key=lambda b: b["t_rel"])
+    clusters: list[list[dict]] = []
+    cur = [ordered[0]]
+    for b in ordered[1:]:
+        if b["t_rel"] - cur[-1]["t_rel"] > gap_sec:
+            clusters.append(cur)
+            cur = [b]
+        else:
+            cur.append(b)
+    clusters.append(cur)
+
+    rallies: list[dict] = []
+    for cluster in clusters:
+        if len(cluster) < min_bounces:
+            continue
+        start = max(0.0, cluster[0]["t_rel"] - LIVE_BOUNCE_CONTEXT_SEC)
+        end = min(duration, cluster[-1]["t_rel"] + LIVE_BOUNCE_CONTEXT_SEC)
+        if end <= start:
+            continue
+        rallies.append({
+            "start": round(start, 1),
+            "end": round(end, 1),
+            "duration": round(end - start, 1),
+            "peak_score": len(cluster),
+            "index": len(rallies) + 1,
+            "source": "live_bounce",
+            "bounce_count": len(cluster),
+        })
+
+    return rallies
+
+
 def count_shots(rally_frames: list[dict]) -> int:
     """Count shots by y-direction reversals."""
     shots = 0
@@ -397,19 +567,29 @@ def generate_report(jsonl_path: str | Path,
     # Load and filter
     raw_data, t0 = load_tracking(jsonl_path)
     filtered = filter_frames(raw_data)
+    live_bounces = extract_live_bounces(raw_data, t0)
 
     if not filtered:
         logger.warning("No valid frames after filtering")
         return {"error": "No valid frames", "raw_count": len(raw_data)}
 
-    duration = filtered[-1]["ts"] - filtered[0]["ts"]
+    duration = raw_data[-1]["ts"] - t0 if raw_data else 0.0
 
     # Detect or use provided rallies
+    rally_source = "provided" if rallies is not None else "offline"
     if rallies is None:
-        rallies = detect_rallies_from_tracking(filtered, t0)
+        rallies = detect_rallies_from_live_bounces(live_bounces, duration)
+        if rallies:
+            rally_source = "live_bounce"
+        else:
+            rallies = detect_rallies_from_tracking(filtered, t0)
 
-    logger.info("Frames: %d raw, %d filtered, %d rallies, %.0fs duration",
-                len(raw_data), len(filtered), len(rallies), duration)
+    use_live_bounces = bool(live_bounces)
+
+    logger.info(
+        "Frames: %d raw, %d filtered, %d live_bounces, %d rallies (%s), %.0fs duration",
+        len(raw_data), len(filtered), len(live_bounces), len(rallies), rally_source, duration,
+    )
 
     # Per-rally analysis
     all_speeds: list[float] = []
@@ -430,24 +610,21 @@ def generate_report(jsonl_path: str | Path,
             "max": round(max(speeds), 1) if speeds else 0,
         })
 
+        rally_live_bounces = [
+            b for b in live_bounces
+            if rally["start"] <= b["t_rel"] <= rally["end"]
+        ] if use_live_bounces else []
+
         shots = count_shots(rf)
+        if rally_live_bounces:
+            shots = max(shots, max(1, len(rally_live_bounces) - 1))
         shots_list.append(shots)
 
-        bounces = detect_bounces_report(rf, shots)
+        bounces = rally_live_bounces if rally_live_bounces else detect_bounces_report(rf, shots)
         all_bounces.extend(bounces)
 
     # Cross-rally bounce dedup
-    all_bounces.sort(key=lambda b: b["frame"])
-    deduped_bounces: list[dict] = []
-    i = 0
-    while i < len(all_bounces):
-        group = [all_bounces[i]]
-        j = i + 1
-        while j < len(all_bounces) and all_bounces[j]["frame"] - group[0]["frame"] <= BOUNCE_DEDUP_FRAMES:
-            group.append(all_bounces[j])
-            j += 1
-        deduped_bounces.append(min(group, key=lambda b: b["z"]))
-        i = j
+    deduped_bounces = _dedup_report_bounces(all_bounces)
 
     bounces_judged = judge_in_out(deduped_bounces)
     in_c = sum(1 for b in bounces_judged if not b["out"])
@@ -504,6 +681,9 @@ def generate_report(jsonl_path: str | Path,
             "bounces_out": out_c,
             "avg_speed_kmh": avg_speed,
             "max_speed_kmh": max_speed,
+            "rally_source": rally_source,
+            "bounce_source": "live" if use_live_bounces else "offline_z_min",
+            "live_bounces_available": len(live_bounces),
             "near_side": {
                 "label": "Near Side (cam66)",
                 "total": len(near_bounces),
