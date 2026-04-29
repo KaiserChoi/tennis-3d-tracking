@@ -631,10 +631,20 @@ async def recording_status():
 
 
 @router.post("/api/recording/ffmpeg/start")
-async def recording_ffmpeg_start():
+async def recording_ffmpeg_start(request: Request):
     """开始 ffmpeg 录像（视频+音频，用于帧对齐）。"""
+    body = {}
+    content_type = request.headers.get("content-type") or ""
+    if "application/json" in content_type:
+        try:
+            body = await request.json()
+        except json.JSONDecodeError:
+            body = {}
+    camera_names = body.get("camera_names")
+    if camera_names is not None and not isinstance(camera_names, list):
+        raise HTTPException(400, "camera_names must be a list")
     orch = _get_orch()
-    return orch.start_recording_ffmpeg()
+    return orch.start_recording_ffmpeg(camera_names=camera_names)
 
 
 @router.post("/api/recording/ffmpeg/stop")

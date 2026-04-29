@@ -140,6 +140,32 @@ body{font-family:'Lato',sans-serif;background:var(--bg);color:var(--text);height
 .rec-dot{width:7px;height:7px;border-radius:50%;background:currentColor;flex-shrink:0}
 .rec-btn.recording .rec-dot{animation:blink 1s infinite}
 @keyframes blink{0%,100%{opacity:1}50%{opacity:.2}}
+.rec-camera-modal{position:fixed;inset:0;z-index:50;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.46);backdrop-filter:blur(4px);padding:16px}
+.rec-camera-modal.open{display:flex}
+.rec-camera-card{width:min(420px,calc(100vw - 32px));background:#242424;border:1px solid rgba(255,255,255,.12);border-radius:8px;box-shadow:0 18px 54px rgba(0,0,0,.55);padding:16px}
+.rec-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:12px}
+.rec-card-kicker{font-size:10px;letter-spacing:.8px;color:#fa4e4e;font-weight:700;text-transform:uppercase}
+.rec-card-head h2{font-size:17px;line-height:1.25;font-weight:700;margin-top:2px}
+.rec-card-close{width:26px;height:26px;border:none;border-radius:4px;background:rgba(255,255,255,.08);color:rgba(255,255,255,.72);cursor:pointer;font-size:15px;font-weight:700;line-height:1}
+.rec-card-close:hover{background:rgba(255,255,255,.14);color:#fff}
+.rec-camera-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.rec-camera-option{position:relative;display:flex;align-items:center;gap:9px;min-height:58px;padding:10px;border-radius:6px;border:1px solid rgba(255,255,255,.1);background:rgba(255,255,255,.04);cursor:pointer;transition:background .15s,border-color .15s}
+.rec-camera-option:hover{background:rgba(255,255,255,.07)}
+.rec-camera-option input{width:15px;height:15px;accent-color:var(--accent);flex-shrink:0}
+.rec-camera-option:has(input:checked){border-color:rgba(95,177,223,.62);background:rgba(95,177,223,.12)}
+.rec-camera-name{display:block;font-size:12px;font-weight:700;line-height:1.2}
+.rec-camera-role{display:block;font-size:10px;color:var(--text-muted);line-height:1.3;margin-top:2px}
+.rec-camera-error{display:none;margin-top:10px;color:#ff8a80;font-size:11px;line-height:1.35}
+.rec-card-actions{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:14px}
+.rec-card-tools{display:flex;gap:6px}
+.rec-card-tool,.rec-card-cancel,.rec-card-start{height:30px;border-radius:4px;border:1px solid rgba(255,255,255,.14);padding:0 10px;font-size:11px;font-weight:700;font-family:'Lato',sans-serif;cursor:pointer}
+.rec-card-tool{background:transparent;color:rgba(255,255,255,.72)}
+.rec-card-tool:hover,.rec-card-cancel:hover{background:rgba(255,255,255,.1);color:#fff}
+.rec-card-cancel{background:rgba(255,255,255,.06);color:rgba(255,255,255,.78)}
+.rec-card-start{border-color:transparent;background:#fa4e4e;color:#fff;min-width:108px}
+.rec-card-start:hover{filter:brightness(1.08)}
+.rec-card-start:disabled{opacity:.55;cursor:not-allowed;filter:none}
+@media (max-width:520px){.rec-camera-grid{grid-template-columns:1fr}.rec-card-actions{align-items:stretch;flex-direction:column}.rec-card-tools{width:100%}.rec-card-tool{flex:1}.rec-card-cancel,.rec-card-start{width:100%}}
 
 /* ---- Video Test Page ---- */
 .upload-area{border:2px dashed rgba(255,255,255,.15);border-radius:8px;padding:24px 16px;text-align:center;cursor:pointer;transition:all .2s;background:rgba(255,255,255,.02)}
@@ -569,6 +595,59 @@ body{font-family:'Lato',sans-serif;background:var(--bg);color:var(--text);height
         </div>
         <div class="video-expand" title="Expand">
           <svg viewBox="0 0 24 24"><path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg>
+        </div>
+      </div>
+
+      <div id="rec-camera-modal" class="rec-camera-modal" aria-hidden="true" onclick="closeRecCameraCard()">
+        <div class="rec-camera-card" onclick="event.stopPropagation()">
+          <div class="rec-card-head">
+            <div>
+              <div class="rec-card-kicker">REC+AV</div>
+              <h2>Choose cameras</h2>
+            </div>
+            <button class="rec-card-close" onclick="closeRecCameraCard()" title="Close">x</button>
+          </div>
+          <div class="rec-camera-grid">
+            <label class="rec-camera-option">
+              <input type="checkbox" name="rec-camera" value="cam66" checked>
+              <span>
+                <span class="rec-camera-name">cam66</span>
+                <span class="rec-camera-role">Tennis near side</span>
+              </span>
+            </label>
+            <label class="rec-camera-option">
+              <input type="checkbox" name="rec-camera" value="cam68" checked>
+              <span>
+                <span class="rec-camera-name">cam68</span>
+                <span class="rec-camera-role">Tennis far side</span>
+              </span>
+            </label>
+            <label class="rec-camera-option">
+              <input type="checkbox" name="rec-camera" value="cam67" checked>
+              <span>
+                <span class="rec-camera-name">cam67</span>
+                <span class="rec-camera-role">Pickleball 1</span>
+              </span>
+            </label>
+            <label class="rec-camera-option">
+              <input type="checkbox" name="rec-camera" value="cam65" checked>
+              <span>
+                <span class="rec-camera-name">cam65</span>
+                <span class="rec-camera-role">Pickleball 2</span>
+              </span>
+            </label>
+          </div>
+          <div id="rec-camera-error" class="rec-camera-error"></div>
+          <div class="rec-card-actions">
+            <div class="rec-card-tools">
+              <button class="rec-card-tool" onclick="setRecCameraSelection(true)">All</button>
+              <button class="rec-card-tool" onclick="setRecCameraSelection(false)">Clear</button>
+            </div>
+            <div style="display:flex;gap:8px">
+              <button class="rec-card-cancel" onclick="closeRecCameraCard()">Cancel</button>
+              <button id="rec-camera-start" class="rec-card-start" onclick="startRecordingAVWithSelection()">Start</button>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -1988,27 +2067,103 @@ function _updateRecDuration(){
   if(txt)txt.textContent=m+':'+ss;
 }
 
+function _recCameraInputs(){
+  return Array.from(document.querySelectorAll('#rec-camera-modal input[name="rec-camera"]'));
+}
+
+function _setRecCameraError(message){
+  const el=document.getElementById('rec-camera-error');
+  if(!el)return;
+  if(message){
+    el.textContent=message;
+    el.style.display='block';
+  } else {
+    el.textContent='';
+    el.style.display='none';
+  }
+}
+
+function openRecCameraCard(){
+  const modal=document.getElementById('rec-camera-modal');
+  if(!modal)return;
+  _setRecCameraError('');
+  const startBtn=document.getElementById('rec-camera-start');
+  if(startBtn){startBtn.disabled=false;startBtn.textContent='Start';}
+  modal.classList.add('open');
+  modal.setAttribute('aria-hidden','false');
+  setTimeout(()=>startBtn?.focus(),0);
+}
+
+function closeRecCameraCard(){
+  const modal=document.getElementById('rec-camera-modal');
+  if(!modal)return;
+  modal.classList.remove('open');
+  modal.setAttribute('aria-hidden','true');
+  _setRecCameraError('');
+}
+
+function setRecCameraSelection(checked){
+  _recCameraInputs().forEach(cb=>{cb.checked=!!checked;});
+  _setRecCameraError('');
+}
+
+function selectedRecCameras(){
+  return _recCameraInputs().filter(cb=>cb.checked).map(cb=>cb.value);
+}
+
+async function startRecordingAVWithSelection(){
+  const cameras=selectedRecCameras();
+  if(!cameras.length){
+    _setRecCameraError('Select at least one camera.');
+    return;
+  }
+  const startBtn=document.getElementById('rec-camera-start');
+  const btn=document.getElementById('rec-av-btn');
+  const txt=btn?.querySelector('.rec-text');
+  if(startBtn){startBtn.disabled=true;startBtn.textContent='Starting...';}
+  _setRecCameraError('');
+  try{
+    const r=await fetch('/api/recording/ffmpeg/start',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({camera_names:cameras})
+    });
+    const data=await r.json().catch(()=>({status:'error',message:'Start failed'}));
+    if(data.status==='recording_ffmpeg'){
+      closeRecCameraCard();
+      _setRecordingAVUI(true,0);
+    } else if(data.status==='stopping_ffmpeg'){
+      closeRecCameraCard();
+      _setRecordingAVUI(true,data.duration_s||0,true);
+    } else {
+      const message=data.message||data.detail||data.status||'Start failed';
+      console.warn('FFmpeg recording:',data.status,message);
+      _setRecCameraError(message);
+      if(txt){
+        txt.textContent=message;
+        setTimeout(()=>{txt.textContent='REC+AV'},2000);
+      }
+    }
+  }catch(e){
+    console.error('FFmpeg recording start failed:',e);
+    _setRecCameraError('Start failed.');
+  }finally{
+    if(startBtn){startBtn.disabled=false;startBtn.textContent='Start';}
+  }
+}
+
+document.addEventListener('keydown',e=>{
+  if(e.key==='Escape')closeRecCameraCard();
+});
+
 // ---- FFmpeg Recording (video + audio) ----
 let _recordingAV=false,_recordingAVStopping=false,_recAVStartTime=null,_recAVTimer=null;
 
 async function toggleRecordingAV(){
   const btn=document.getElementById('rec-av-btn');
-  const txt=btn.querySelector('.rec-text');
   if(_recordingAVStopping) return;
   if(!_recordingAV){
-    try{
-      const r=await fetch('/api/recording/ffmpeg/start',{method:'POST'});
-      const data=await r.json();
-      if(data.status==='recording_ffmpeg'){
-        _setRecordingAVUI(true,0);
-      } else if(data.status==='stopping_ffmpeg'){
-        _setRecordingAVUI(true,data.duration_s||0,true);
-      } else {
-        console.warn('FFmpeg recording:',data.status,data.message||'');
-        txt.textContent=data.message||data.status;
-        setTimeout(()=>{txt.textContent='REC+AV'},2000);
-      }
-    }catch(e){console.error('FFmpeg recording start failed:',e)}
+    openRecCameraCard();
   } else {
     try{
       const r=await fetch('/api/recording/ffmpeg/stop',{method:'POST'});

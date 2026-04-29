@@ -52,6 +52,18 @@ LIVE_BOUNCE_DEDUP_DIST_M = 1.5
 LIVE_BOUNCE_EXTENDED_X = 6.5
 LIVE_BOUNCE_EXTENDED_Y = 14.5
 
+# Default report path: replay the high-quality JSONL trajectory through the
+# same HybridBounceDetector family used by realtime, then form activity
+# windows from bounce cadence. This recovers bounces that realtime missed
+# because the ball disappeared/reappeared or because live gating was late.
+TRAJECTORY_REPLAY_RALLY_GAP_SEC = 8.0
+TRAJECTORY_REPLAY_CONTEXT_SEC = 1.0
+TRAJECTORY_REPLAY_MIN_RALLY_BOUNCES = 3
+TRAJECTORY_REPLAY_STRICT_MIN_BOUNCES = 4
+TRAJECTORY_REPLAY_LOOSE_MIN_BOUNCES = 2
+TRAJECTORY_REPLAY_EXTENDED_X = 6.5
+TRAJECTORY_REPLAY_EXTENDED_Y = 16.0
+
 REPORTS_DIR = Path("reports")
 
 
@@ -258,11 +270,24 @@ def judge_in_out(bounces: list[dict]) -> list[dict]:
 
         side = "near" if y < 0 else "far"
 
-        result.append({
+        item = {
             "x": round(x, 2), "y": round(y, 2), "z": round(b.get("z", 0), 3),
             "out": out, "reason": reason,
             "side": side,
-        })
+        }
+        for key in (
+            "frame",
+            "ts",
+            "t_rel",
+            "source",
+            "source_camera",
+            "confidence",
+            "in_court",
+            "live_time_support",
+        ):
+            if key in b:
+                item[key] = b[key]
+        result.append(item)
     return result
 
 
@@ -367,6 +392,251 @@ def extract_live_bounces(raw_data: list[dict], t0: float) -> list[dict]:
         })
 
     return _dedup_report_bounces(bounces)
+
+
+def _load_report_hybrid_kwargs() -> dict[str, Any]:
+    """Load HybridBounceDetector params used for report trajectory replay."""
+    kwargs: dict[str, Any] = {
+        "buf_size": 60,
+        "z_max": 0.85,
+        "min_seg_len": 7,
+        "min_dense": 3,
+        "dense_range": 12,
+        "min_speed": 2.5,
+        "max_gap_s": 0.75,
+        "v_window": 7,
+        "half_wins": (4, 6, 7),
+        "cooldown_frames": 12,
+        "fps": 25.0,
+    }
+    try:
+        from app.config import load_config
+
+        cfg = load_config()
+        hybrid = cfg.bounce_detection.hybrid
+        kwargs.update({
+            "z_max": hybrid.z_max,
+            "min_seg_len": hybrid.min_seg_len,
+            "min_dense": hybrid.min_dense,
+            "dense_range": hybrid.dense_range,
+            "min_speed": hybrid.min_speed,
+            "max_gap_s": hybrid.max_gap_s,
+            "v_window": hybrid.v_window,
+            "half_wins": tuple(hybrid.half_wins),
+            "cooldown_frames": hybrid.cooldown_frames,
+        })
+    except Exception as exc:
+        logger.warning("Using built-in report bounce config; config.yaml unavailable: %s", exc)
+    return kwargs
+
+
+def _finite_float(value: Any) -> float | None:
+    try:
+        v = float(value)
+    except Exception:
+        return None
+    return v if math.isfinite(v) else None
+
+
+def _trajectory_replay_point(row: dict, idx: int) -> dict | None:
+    """Return a quality-filtered 3D point for trajectory replay."""
+    cam66 = row.get("cam66")
+    cam68 = row.get("cam68")
+    if not isinstance(cam66, dict) or not isinstance(cam68, dict):
+        return None
+
+    c66 = _finite_float(cam66.get("conf")) or 0.0
+    c68 = _finite_float(cam68.get("conf")) or 0.0
+    if c66 > 150 or c68 > 150:
+        return None
+    if c66 < 15 and c68 < 15:
+        return None
+
+    wx66 = _finite_float(cam66.get("wx"))
+    wy66 = _finite_float(cam66.get("wy"))
+    wx68 = _finite_float(cam68.get("wx"))
+    wy68 = _finite_float(cam68.get("wy"))
+    if None in (wx66, wy66, wx68, wy68):
+        return None
+    if math.hypot(wx66 - wx68, wy66 - wy68) > 8:
+        return None
+
+    pos = row.get("smoothed") or row.get("3d")
+    if not isinstance(pos, dict):
+        return None
+    x = _finite_float(pos.get("x"))
+    y = _finite_float(pos.get("y"))
+    z = _finite_float(pos.get("z"))
+    # The JSONL "smoothed" coordinate is written on the output row. For report
+    # replay, row ts is the monotonic trajectory sample clock; capture_ts can
+    # refer to the original camera pair and under-splits this stored trajectory.
+    ts = _finite_float(row.get("ts"))
+    if None in (x, y, z, ts):
+        return None
+
+    frame = row.get("frame", idx)
+    try:
+        frame = int(frame)
+    except Exception:
+        frame = idx
+
+    return {
+        "x": x,
+        "y": y,
+        "z": max(0.0, z),
+        "timestamp": ts,
+        "capture_ts": ts,
+        "frame_index": frame,
+    }
+
+
+def replay_trajectory_bounces(raw_data: list[dict], t0: float, duration: float) -> dict:
+    """Recompute report bounces by replaying JSONL 3D trajectory through Hybrid."""
+    from app.analytics import HybridBounceDetector
+
+    kwargs = _load_report_hybrid_kwargs()
+    detector_kwargs = {
+        k: v for k, v in kwargs.items()
+        if k in {
+            "buf_size",
+            "v_window",
+            "half_wins",
+            "z_max",
+            "min_seg_len",
+            "min_dense",
+            "dense_range",
+            "min_speed",
+            "cooldown_frames",
+            "fps",
+            "max_gap_s",
+        }
+    }
+    detector = HybridBounceDetector(**detector_kwargs)
+
+    candidates: list[dict] = []
+    filtered_rows = 0
+    for idx, row in enumerate(raw_data):
+        point = _trajectory_replay_point(row, idx)
+        if point is None:
+            continue
+        filtered_rows += 1
+        # This report mode is explicitly trajectory-based. Hybrid can use
+        # single-camera homography to refine live landing coordinates, but in
+        # offline reports that made IN/OUT less stable on this data. Use the
+        # 3D trajectory landing coordinate as the source of truth.
+        event = detector.update(point, {})
+        if event is None:
+            continue
+
+        bd = event.to_dict()
+        x = _finite_float(bd.get("x"))
+        y = _finite_float(bd.get("y"))
+        z = _finite_float(bd.get("z")) or 0.0
+        ts = _finite_float(bd.get("capture_ts", bd.get("timestamp")))
+        if None in (x, y, ts):
+            continue
+        if abs(x) > TRAJECTORY_REPLAY_EXTENDED_X or abs(y) > TRAJECTORY_REPLAY_EXTENDED_Y:
+            continue
+
+        frame = bd.get("frame_index")
+        try:
+            frame = int(frame)
+        except Exception:
+            frame = point["frame_index"]
+
+        candidates.append({
+            "x": x,
+            "y": y,
+            "z": z,
+            "frame": frame,
+            "ts": ts,
+            "t_rel": ts - t0,
+            "confidence": bd.get("confidence"),
+            "source": "trajectory_recomputed",
+            "source_camera": bd.get("source_camera", "3d"),
+        })
+
+    candidates = _dedup_report_bounces(candidates)
+    variants: dict[str, dict] = {}
+    for name, min_bounces in (
+        ("loose", TRAJECTORY_REPLAY_LOOSE_MIN_BOUNCES),
+        ("balanced", TRAJECTORY_REPLAY_MIN_RALLY_BOUNCES),
+        ("strict", TRAJECTORY_REPLAY_STRICT_MIN_BOUNCES),
+    ):
+        windows, selected, active_seconds = _cluster_replayed_bounces(
+            candidates,
+            duration=duration,
+            min_bounces=min_bounces,
+        )
+        selected = _dedup_report_bounces(selected)
+        judged = judge_in_out(selected)
+        variants[name] = {
+            "min_count": min_bounces,
+            "cluster_count": len(windows),
+            "bounce_count": len(selected),
+            "in": sum(1 for b in judged if not b["out"]),
+            "out": sum(1 for b in judged if b["out"]),
+            "active_seconds": round(active_seconds, 1),
+            "rallies": windows,
+            "bounces": selected,
+        }
+
+    return {
+        "all_bounces": candidates,
+        "filtered_rows": filtered_rows,
+        "detector_cfg": {
+            **{k: v for k, v in detector_kwargs.items() if k != "half_wins"},
+            "half_wins": list(detector_kwargs.get("half_wins", ())),
+        },
+        "variants": variants,
+        "recommended": variants["balanced"],
+    }
+
+
+def _cluster_replayed_bounces(
+    bounces: list[dict],
+    *,
+    duration: float,
+    min_bounces: int,
+    gap_sec: float = TRAJECTORY_REPLAY_RALLY_GAP_SEC,
+) -> tuple[list[dict], list[dict], float]:
+    if not bounces:
+        return [], [], 0.0
+
+    ordered = sorted(bounces, key=lambda b: b["t_rel"])
+    clusters: list[list[dict]] = []
+    cur = [ordered[0]]
+    for b in ordered[1:]:
+        if b["t_rel"] - cur[-1]["t_rel"] > gap_sec:
+            clusters.append(cur)
+            cur = [b]
+        else:
+            cur.append(b)
+    clusters.append(cur)
+
+    windows: list[dict] = []
+    selected: list[dict] = []
+    active_seconds = 0.0
+    for cluster in clusters:
+        if len(cluster) < min_bounces:
+            continue
+        start = max(0.0, cluster[0]["t_rel"] - TRAJECTORY_REPLAY_CONTEXT_SEC)
+        end = min(duration, cluster[-1]["t_rel"] + TRAJECTORY_REPLAY_CONTEXT_SEC)
+        if end <= start:
+            continue
+        active_seconds += end - start
+        selected.extend(cluster)
+        windows.append({
+            "start": round(start, 1),
+            "end": round(end, 1),
+            "duration": round(end - start, 1),
+            "peak_score": len(cluster),
+            "index": len(windows) + 1,
+            "source": "trajectory_recomputed",
+            "bounce_count": len(cluster),
+        })
+
+    return windows, selected, active_seconds
 
 
 def detect_rallies_from_live_bounces(
@@ -565,30 +835,42 @@ def generate_report(jsonl_path: str | Path,
     logger.info("Generating report from %s", jsonl_path.name)
 
     # Load and filter
-    raw_data, t0 = load_tracking(jsonl_path)
+    raw_data, _raw_t0 = load_tracking(jsonl_path)
     filtered = filter_frames(raw_data)
-    live_bounces = extract_live_bounces(raw_data, t0)
 
     if not filtered:
         logger.warning("No valid frames after filtering")
         return {"error": "No valid frames", "raw_count": len(raw_data)}
 
+    # Anchor report time to the first valid trajectory sample, not the first raw
+    # JSONL row. Raw warm-up rows can be low-quality pre-roll and would shift
+    # every rally/bounce time by several seconds.
+    t0 = filtered[0]["ts"]
     duration = raw_data[-1]["ts"] - t0 if raw_data else 0.0
+    live_bounces = extract_live_bounces(raw_data, t0)
+    trajectory_replay = replay_trajectory_bounces(raw_data, t0, duration)
+    trajectory_bounces = trajectory_replay["recommended"]["bounces"]
 
     # Detect or use provided rallies
     rally_source = "provided" if rallies is not None else "offline"
     if rallies is None:
-        rallies = detect_rallies_from_live_bounces(live_bounces, duration)
+        rallies = trajectory_replay["recommended"]["rallies"]
         if rallies:
-            rally_source = "live_bounce"
+            rally_source = "trajectory_recomputed"
         else:
-            rallies = detect_rallies_from_tracking(filtered, t0)
+            rallies = detect_rallies_from_live_bounces(live_bounces, duration)
+            if rallies:
+                rally_source = "live_bounce"
+            else:
+                rallies = detect_rallies_from_tracking(filtered, t0)
 
-    use_live_bounces = bool(live_bounces)
+    use_trajectory_bounces = bool(trajectory_bounces)
+    use_live_bounces = bool(live_bounces) and not use_trajectory_bounces
 
     logger.info(
-        "Frames: %d raw, %d filtered, %d live_bounces, %d rallies (%s), %.0fs duration",
-        len(raw_data), len(filtered), len(live_bounces), len(rallies), rally_source, duration,
+        "Frames: %d raw, %d filtered, %d trajectory_bounces, %d live_bounces, %d rallies (%s), %.0fs duration",
+        len(raw_data), len(filtered), len(trajectory_bounces), len(live_bounces),
+        len(rallies), rally_source, duration,
     )
 
     # Per-rally analysis
@@ -610,17 +892,27 @@ def generate_report(jsonl_path: str | Path,
             "max": round(max(speeds), 1) if speeds else 0,
         })
 
+        rally_trajectory_bounces = [
+            b for b in trajectory_bounces
+            if rally["start"] <= b["t_rel"] <= rally["end"]
+        ] if use_trajectory_bounces else []
         rally_live_bounces = [
             b for b in live_bounces
             if rally["start"] <= b["t_rel"] <= rally["end"]
         ] if use_live_bounces else []
 
         shots = count_shots(rf)
-        if rally_live_bounces:
-            shots = max(shots, max(1, len(rally_live_bounces) - 1))
+        rally_bounce_count = len(rally_trajectory_bounces) or len(rally_live_bounces)
+        if rally_bounce_count:
+            shots = max(shots, max(1, rally_bounce_count - 1))
         shots_list.append(shots)
 
-        bounces = rally_live_bounces if rally_live_bounces else detect_bounces_report(rf, shots)
+        if rally_trajectory_bounces:
+            bounces = rally_trajectory_bounces
+        elif rally_live_bounces:
+            bounces = rally_live_bounces
+        else:
+            bounces = detect_bounces_report(rf, shots)
         all_bounces.extend(bounces)
 
     # Cross-rally bounce dedup
@@ -682,8 +974,18 @@ def generate_report(jsonl_path: str | Path,
             "avg_speed_kmh": avg_speed,
             "max_speed_kmh": max_speed,
             "rally_source": rally_source,
-            "bounce_source": "live" if use_live_bounces else "offline_z_min",
+            "bounce_source": (
+                "trajectory_recomputed"
+                if use_trajectory_bounces
+                else "live" if use_live_bounces else "offline_z_min"
+            ),
             "live_bounces_available": len(live_bounces),
+            "trajectory_bounces_available": len(trajectory_bounces),
+            "trajectory_all_candidates": len(trajectory_replay["all_bounces"]),
+            "trajectory_filtered_rows": trajectory_replay["filtered_rows"],
+            "reasonable_range_low": trajectory_replay["variants"]["strict"]["bounce_count"],
+            "reasonable_range_high": trajectory_replay["variants"]["loose"]["bounce_count"],
+            "trajectory_replay_cfg": trajectory_replay["detector_cfg"],
             "near_side": {
                 "label": "Near Side (cam66)",
                 "total": len(near_bounces),

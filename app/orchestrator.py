@@ -1164,6 +1164,7 @@ class Orchestrator:
                     "mode": "ffmpeg",
                     "duration_s": round(elapsed, 1),
                     "files": files,
+                    "camera_names": list(self._ffmpeg_processes.keys()),
                     "session_dir": self._ffmpeg_session_dir,
                     "segment_seconds": self._FFMPEG_SEGMENT_SECONDS,
                     "segment_counts": {name: len(paths) for name, paths in segments.items()},
@@ -1198,6 +1199,56 @@ class Orchestrator:
             segments[name] = str_paths
             files[name] = str_paths[-1] if str_paths else info["pattern"]
         return files, segments
+
+    @staticmethod
+    def _resolve_ffmpeg_bin() -> str | None:
+        """Find ffmpeg even when the running process has a stale Windows PATH."""
+        import shutil
+
+        ffmpeg_bin = shutil.which("ffmpeg")
+        if ffmpeg_bin:
+            return ffmpeg_bin
+
+        path_parts: list[str] = []
+        if os.name == "nt":
+            try:
+                import winreg
+
+                registry_keys = (
+                    (winreg.HKEY_CURRENT_USER, r"Environment"),
+                    (
+                        winreg.HKEY_LOCAL_MACHINE,
+                        r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+                    ),
+                )
+                for root, key_path in registry_keys:
+                    try:
+                        with winreg.OpenKey(root, key_path) as key:
+                            value, _value_type = winreg.QueryValueEx(key, "Path")
+                            path_parts.extend(str(value).split(os.pathsep))
+                    except OSError:
+                        continue
+            except Exception:
+                pass
+
+        registry_path = os.pathsep.join(
+            os.path.expandvars(p) for p in path_parts if p
+        )
+        ffmpeg_bin = shutil.which("ffmpeg", path=registry_path)
+        if ffmpeg_bin:
+            logger.info("Resolved ffmpeg from Windows environment registry: %s", ffmpeg_bin)
+            return ffmpeg_bin
+
+        for candidate in (
+            Path(r"D:\ffmpeg-master-latest-win64-gpl\bin\ffmpeg.exe"),
+            Path(r"C:\msys64\ucrt64\bin\ffmpeg.exe"),
+            Path(r"D:\tennis-workspace\ffmpeg\bin\ffmpeg.exe"),
+        ):
+            if candidate.exists():
+                logger.info("Resolved ffmpeg from known local path: %s", candidate)
+                return str(candidate)
+
+        return None
 
     def _monitor_ffmpeg_recording(self) -> None:
         import shutil
@@ -1273,7 +1324,7 @@ class Orchestrator:
             logger.info("[%s] ffmpeg recording stopped: %s", name, latest_path)
         logger.info("FFmpeg recording stop complete (reason=%s, duration=%.1fs)", reason, elapsed)
 
-    def start_recording_ffmpeg(self) -> dict:
+    def start_recording_ffmpeg(self, camera_names: list[str] | None = None) -> dict:
         """Start segmented ffmpeg recording (video + optional audio) from RTSP.
 
         This path is intended for long sessions: ffmpeg writes directly to disk,
@@ -1281,19 +1332,55 @@ class Orchestrator:
         playable. That makes it much safer than a single giant MP4 if the
         process crashes or the machine runs out of disk.
         """
-        import shutil
         import subprocess
 
         with self._ffmpeg_lock:
             if self._ffmpeg_processes:
                 files, _segments = self._collect_ffmpeg_segment_snapshot_locked()
-                return {"status": "already_recording_ffmpeg", "files": files}
+                return {
+                    "status": "already_recording_ffmpeg",
+                    "files": files,
+                    "camera_names": list(self._ffmpeg_processes.keys()),
+                }
             if self._ffmpeg_stopping:
                 return {"status": "stopping_ffmpeg"}
 
-            ffmpeg_bin = shutil.which("ffmpeg")
+            ffmpeg_bin = self._resolve_ffmpeg_bin()
             if not ffmpeg_bin:
                 return {"status": "error", "message": "ffmpeg not found in PATH"}
+
+            requested_names: list[str] | None = None
+            if camera_names is not None:
+                seen: set[str] = set()
+                requested_names = []
+                for raw_name in camera_names:
+                    name = str(raw_name).strip()
+                    if name and name not in seen:
+                        seen.add(name)
+                        requested_names.append(name)
+                if not requested_names:
+                    return {"status": "error", "message": "no cameras selected"}
+
+            missing_names = [
+                name for name in (requested_names or []) if name not in self.config.cameras
+            ]
+            if missing_names:
+                return {
+                    "status": "error",
+                    "message": "unknown cameras: " + ", ".join(missing_names),
+                }
+
+            camera_items = (
+                [(name, self.config.cameras[name]) for name in requested_names]
+                if requested_names is not None
+                else list(self.config.cameras.items())
+            )
+            camera_items = [
+                (name, cam_cfg) for name, cam_cfg in camera_items
+                if getattr(cam_cfg, "rtsp_url", None)
+            ]
+            if not camera_items:
+                return {"status": "error", "message": "no selected cameras with rtsp"}
 
             self._recordings_dir.mkdir(parents=True, exist_ok=True)
             ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -1302,10 +1389,8 @@ class Orchestrator:
             files: dict[str, str] = {}
             creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
-            for name, cam_cfg in self.config.cameras.items():
+            for name, cam_cfg in camera_items:
                 rtsp_url = cam_cfg.rtsp_url
-                if not rtsp_url:
-                    continue
 
                 out_pattern = str(session_dir / f"{name}_%Y%m%d_%H%M%S.mkv")
                 log_path = session_dir / f"{name}_ffmpeg.log"
@@ -1374,6 +1459,7 @@ class Orchestrator:
             return {
                 "status": "recording_ffmpeg",
                 "files": files,
+                "camera_names": list(files.keys()),
                 "session_dir": str(session_dir),
                 "segment_seconds": self._FFMPEG_SEGMENT_SECONDS,
             }
