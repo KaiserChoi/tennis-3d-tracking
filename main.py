@@ -38,6 +38,7 @@ class _AccessNoiseFilter(logging.Filter):
 
     _suppressed_fragments = (
         '"GET /api/status HTTP/1.1" 200',
+        '"GET /api/status?dashboard=1',
         '"GET /api/recording/status HTTP/1.1" 200',
     )
 

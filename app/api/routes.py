@@ -48,8 +48,10 @@ async def dashboard():
 # ---- System status ----
 
 @router.get("/api/status")
-async def system_status():
+async def system_status(dashboard: bool = False, event_limit: int = 40):
     orch = _get_orch()
+    if dashboard:
+        return orch.get_dashboard_status(event_limit=event_limit)
     status = orch.get_system_status()
     return status.model_dump()
 
@@ -174,6 +176,16 @@ async def set_bounce_detection(state: str):
     if state not in ("on", "off"):
         raise HTTPException(400, "state must be 'on' or 'off'")
     return orch.set_bounce_detection_enabled(state == "on")
+
+
+@router.post("/api/function/bounce-mode/{mode}")
+async def set_bounce_mode(mode: str):
+    """Switch bounce source: stereo | mono_cam66 | mono_cam68."""
+    orch = _get_orch()
+    try:
+        return orch.set_bounce_mode(mode)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
 
 
 @router.post("/api/function/net-crossing/{state}")
@@ -589,7 +601,7 @@ async def set_track_ball(state: str):
 
 @router.post("/api/model/switch/{model_name}")
 async def switch_model(model_name: str):
-    """Switch detection model: model_name = 'hrnet' | 'tracknet'"""
+    """Switch detection model: model_name = 'hrnet' | 'tracknet' | 'yolo_roadmap'."""
     orch = _get_orch()
     try:
         result = orch.switch_model(model_name)
@@ -945,6 +957,21 @@ async def compute_3d():
         "stats": result.get("stats", {}),
         "cam_order": result.get("cam_order", []),
     }
+
+
+@router.post("/api/video-test/compute-single-cam-bounces")
+async def compute_single_cam_bounces(request: Request):
+    """Compute YOLO roadmap fuzzy bounces from one camera's 2D trajectory."""
+    orch = _get_orch()
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+    result = orch.compute_single_cam_bounces(body.get("camera"))
+    if "error" in result:
+        raise HTTPException(400, result["error"])
+    return result
 
 
 @router.post("/api/video-test/compute-trajectory")

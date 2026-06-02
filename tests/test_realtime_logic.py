@@ -1,3 +1,5 @@
+import asyncio
+import json
 import os
 import sys
 
@@ -118,6 +120,205 @@ def test_live_bounce_history_keeps_true_total_after_rollover(orch):
     assert [b["sequence"] for b in analytics["recent_bounces"]] == [3, 4, 5]
 
 
+def _accepted_yolo_bounce(frame=42, x=1.25, y=-3.5):
+    return {
+        "timestamp": 1000.0,
+        "capture_ts": 1000.0,
+        "x": x,
+        "y": y,
+        "z": 0.0,
+        "in_court": True,
+        "frame": frame,
+        "frame_index": frame,
+        "camera": "cam68",
+        "camera_name": "cam68",
+        "bounce_mode": "mono_cam68",
+        "source": "yolo_fuzzy_single_cam",
+        "speed_kmh": 57,
+    }
+
+
+def test_3d_push_enabled_queues_yolo_bounce_from_record_fanout(orch):
+    orch._bounce_mode = "mono_cam68"
+    orch._ws_enabled = True
+
+    orch._record_live_bounce_locked(_accepted_yolo_bounce())
+
+    assert orch._live_bounces[-1]["sequence"] == orch._ws_bounce_queue[-1]["sequence"]
+    assert orch._ws_bounce_queue[-1]["source"] == "yolo_fuzzy_single_cam"
+    assert orch._ws_bounce_queue[-1]["bounce_mode"] == "mono_cam68"
+    assert orch._ws_bounce_queue[-1]["camera_name"] == "cam68"
+    assert orch._ws_bounce_queue[-1]["frame_index"] == 42
+    analytics = orch.get_live_analytics()
+    assert analytics["ws_pending_bounces"] == 1
+    assert analytics["ws_last_queued_sequence"] == orch._live_bounces[-1]["sequence"]
+    assert analytics["ws_last_sent_sequence"] is None
+    assert analytics["ws_sent_count"] == 0
+    assert analytics["ws_error_count"] == 0
+    assert analytics["ws_last_error"] is None
+
+
+def test_dashboard_status_limits_events_without_trimming_history(orch):
+    for i in range(60):
+        orch._record_live_bounce_locked(_accepted_yolo_bounce(frame=i))
+        orch._record_live_hit_locked({"timestamp": float(i), "x": 0.0, "y": 0.0})
+        orch._record_live_speed_event_locked({"timestamp": float(i), "speed_kmh": 80})
+
+    status = orch.get_dashboard_status(event_limit=40)
+    analytics = status["analytics"]
+    encoded = json.dumps(status, default=str).encode("utf-8")
+
+    assert len(analytics["recent_bounces"]) == 40
+    assert analytics["recent_bounces"][0]["frame_index"] == 20
+    assert analytics["total_bounces"] == 60
+    assert analytics["recent_hits"] == []
+    assert analytics["recent_speed_events"] == []
+    assert analytics["completed_rallies"] == []
+    assert len(orch._live_bounces) == 60
+    assert "latest_detections" not in status
+    assert len(encoded) < 50 * 1024
+
+
+def test_3d_push_disabled_keeps_yolo_bounce_out_of_ws_queue(orch):
+    orch._bounce_mode = "mono_cam68"
+    orch._ws_enabled = False
+
+    orch._record_live_bounce_locked(_accepted_yolo_bounce())
+
+    assert len(orch._live_bounces) == 1
+    assert len(orch._ws_bounce_queue) == 0
+
+
+def test_yolo_accepted_bounce_uses_record_fanout_for_ws_queue(orch, monkeypatch):
+    def fake_detect_single_camera_events(*_args, **_kwargs):
+        return {
+            "bounces": [
+                {
+                    "frame_index": 10,
+                    "x": 1.25,
+                    "y": -3.5,
+                    "pixel_x": 960,
+                    "pixel_y": 540,
+                    "in_court": True,
+                    "source": "yolo_fuzzy_single_cam",
+                }
+            ],
+            "hits": [],
+            "speed_events": [],
+        }
+
+    import app.pipeline.yolo_bounce_filter as yolo_bounce_filter
+
+    monkeypatch.setattr(
+        yolo_bounce_filter,
+        "detect_single_camera_events",
+        fake_detect_single_camera_events,
+    )
+    monkeypatch.setattr(orch, "_event_homography_for_camera", lambda _cam: None)
+    orch.config.model.detector_type = "yolo_roadmap"
+    orch._bounce_mode = "mono_cam68"
+    orch._ws_enabled = True
+
+    det = {
+        "frame_index": 20,
+        "timestamp": 1000.0,
+        "capture_ts": 1000.0,
+        "pixel_x": 960,
+        "pixel_y": 540,
+        "x": 1.25,
+        "y": -3.5,
+    }
+    with orch._analytics_lock:
+        emitted = orch._run_yolo_fuzzy_single_cam_locked("cam68", det)
+
+    assert emitted is not None
+    assert orch._live_bounces[-1]["source"] == "yolo_fuzzy_single_cam"
+    assert orch._live_bounces[-1]["sequence"] == orch._ws_bounce_queue[-1]["sequence"]
+    assert orch._ws_bounce_queue[-1]["frame_index"] == 10
+
+
+def test_enable_3d_push_does_not_replay_existing_live_bounces(orch, monkeypatch):
+    monkeypatch.setattr(orch, "_ws_push_loop", lambda: None)
+    orch._record_live_bounce_locked(_accepted_yolo_bounce(frame=10))
+    assert len(orch._live_bounces) == 1
+    assert len(orch._ws_bounce_queue) == 0
+
+    orch.enable_3d_display()
+
+    assert len(orch._live_bounces) == 1
+    assert len(orch._ws_bounce_queue) == 0
+
+    orch._record_live_bounce_locked(_accepted_yolo_bounce(frame=11))
+
+    assert len(orch._live_bounces) == 2
+    assert len(orch._ws_bounce_queue) == 1
+    assert orch._ws_bounce_queue[0]["frame_index"] == 11
+
+
+def test_3d_push_queue_uses_remote_units_with_raw_coordinates(orch):
+    orch._ws_enabled = True
+
+    orch._record_live_bounce_locked(_accepted_yolo_bounce(x=1.25, y=-3.5))
+    queued = orch._ws_bounce_queue[-1]
+
+    assert queued["raw_x"] == pytest.approx(1.25)
+    assert queued["raw_y"] == pytest.approx(-3.5)
+    assert queued["x"] == pytest.approx(queued["raw_x"] * 10)
+    assert queued["y"] == pytest.approx(queued["raw_y"] * 10)
+
+
+def test_3d_push_send_success_pops_queue_and_records_sequence(orch):
+    class FakeWebSocket:
+        def __init__(self):
+            self.messages = []
+
+        async def send(self, message):
+            self.messages.append(json.loads(message))
+
+    orch._ws_enabled = True
+    orch._record_live_bounce_locked(_accepted_yolo_bounce(frame=88))
+    sequence = orch._ws_bounce_queue[0]["sequence"]
+    ws = FakeWebSocket()
+
+    sent = asyncio.run(orch._send_ws_bounce_once(ws))
+
+    assert sent is True
+    assert len(orch._ws_bounce_queue) == 0
+    assert orch._ws_last_sent_sequence == sequence
+    assert orch._ws_sent_count == 1
+    assert ws.messages[0]["msg"]["data"]["bounce"]["x"] == pytest.approx(12.5)
+
+
+def test_3d_push_send_failure_keeps_queue_for_retry(orch):
+    class FailingWebSocket:
+        async def send(self, _message):
+            raise ConnectionError("disconnected")
+
+    class WorkingWebSocket:
+        def __init__(self):
+            self.messages = []
+
+        async def send(self, message):
+            self.messages.append(json.loads(message))
+
+    orch._ws_enabled = True
+    orch._record_live_bounce_locked(_accepted_yolo_bounce(frame=89))
+    sequence = orch._ws_bounce_queue[0]["sequence"]
+
+    with pytest.raises(ConnectionError):
+        asyncio.run(orch._send_ws_bounce_once(FailingWebSocket()))
+
+    assert len(orch._ws_bounce_queue) == 1
+    assert orch._ws_bounce_queue[0]["sequence"] == sequence
+    assert orch._ws_last_sent_sequence is None
+
+    ws = WorkingWebSocket()
+    assert asyncio.run(orch._send_ws_bounce_once(ws)) is True
+    assert len(orch._ws_bounce_queue) == 0
+    assert orch._ws_last_sent_sequence == sequence
+    assert ws.messages[0]["msg"]["data"]["bounce"]["x"] == pytest.approx(12.5)
+
+
 def test_post_filter_f2_allows_quick_but_distant_bounce(orch):
     orch._live_bounces = [
         {"timestamp": 10.0, "x": -3.0, "y": -8.0, "side": "near", "in_court": True}
@@ -162,8 +363,8 @@ def test_live_detectors_respect_bounce_toggle_and_reset_buffers(orch, monkeypatc
     def fake_pop_pending():
         return []
 
-    def fake_smooth(point):
-        return point
+    def fake_smooth(point, cam_dets):
+        return point, cam_dets
 
     def fake_hybrid_update(_point, _cam_dets):
         calls["hybrid"] += 1

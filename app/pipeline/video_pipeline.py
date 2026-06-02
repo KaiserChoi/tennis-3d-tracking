@@ -19,6 +19,17 @@ from app.pipeline.postprocess import BallTracker
 
 logger = logging.getLogger(__name__)
 
+YOLO_META_KEYS = (
+    "yolo_conf",
+    "bbox",
+    "track_id",
+    "pseudo_track_id",
+    "static_count",
+    "static_status",
+    "static_zone_id",
+    "source",
+)
+
 
 # ---------------------------------------------------------------------------
 # Frame prefetch thread
@@ -102,6 +113,10 @@ def run_video_pipeline(
     heatmap_mask: Optional[list[tuple[int, int, int, int]]] = None,
     blob_verifier_config: Optional[dict] = None,
     detector_type: str = "auto",
+    player_model_path: str = "",
+    player_device: str = "cuda",
+    player_conf: float = 0.4,
+    player_run_every_n: int = 5,
 ) -> None:
     """Process a video file segment through the ball detection pipeline.
 
@@ -200,11 +215,26 @@ def run_video_pipeline(
             )
         homography = HomographyTransformer(homography_path, homography_key)
 
+        player_detector = None
+        if player_model_path:
+            try:
+                from app.pipeline.player_detector import PlayerPoseDetector
+                player_detector = PlayerPoseDetector(
+                    model_path=player_model_path,
+                    device=player_device,
+                    conf=player_conf,
+                    run_every_n=player_run_every_n,
+                )
+                log.info("Player detector enabled for video test: %s", player_model_path)
+            except Exception as e:
+                log.warning("Player detector failed to load, disabled: %s", e)
+
         # Initialize blob verifier (optional YOLO secondary detection)
         blob_verifier = None
         use_verifier = (
             blob_verifier_config is not None
             and blob_verifier_config.get("enabled", False)
+            and not getattr(detector, "already_verified", False)
         )
         if use_verifier:
             from app.pipeline.blob_verifier import BlobVerifier
@@ -242,6 +272,31 @@ def run_video_pipeline(
 
             processed_count, frame_buffer, raw_frames, preview_frame = item
 
+            if player_detector is not None and raw_frames:
+                first_raw_frame_index = start_frame + processed_count - len(raw_frames)
+                for raw_i, raw_frame in enumerate(raw_frames):
+                    try:
+                        player_dets = player_detector.detect(raw_frame)
+                    except Exception as e:
+                        log.debug("Player detection error: %s", e)
+                        continue
+                    if not player_dets:
+                        continue
+                    frame_index = first_raw_frame_index + raw_i
+                    now_ts = time.time()
+                    try:
+                        result_queue.put_nowait({
+                            "type": "player_pose",
+                            "camera_name": camera_name,
+                            "frame_id": frame_index,
+                            "frame_index": frame_index,
+                            "timestamp": now_ts,
+                            "capture_ts": now_ts,
+                            "detections": player_dets,
+                        })
+                    except Exception:
+                        pass
+
             if ensemble_detector is not None:
                 # ---- Ensemble mode: both models + cross-validation ----
                 try:
@@ -277,6 +332,8 @@ def run_video_pipeline(
                 # ---- Single model mode: multi-blob output ----
                 try:
                     heatmaps = detector.infer(frame_buffer)
+                    if hasattr(detector, "get_runtime_stats"):
+                        status_dict["detector_stats"] = detector.get_runtime_stats()
                 except Exception as e:
                     log.error("Inference error: %s", e)
                     continue
@@ -307,7 +364,9 @@ def run_video_pipeline(
                         # Filter: only keep blobs whose world X is within court
                         if not (homography.court_x_min <= wx <= homography.court_x_max):
                             continue
-                        candidates.append({
+                        candidate = {
+                            "x": wx,
+                            "y": wy,
                             "pixel_x": blob["pixel_x"],
                             "pixel_y": blob["pixel_y"],
                             "world_x": wx,
@@ -315,7 +374,11 @@ def run_video_pipeline(
                             "blob_sum": blob["blob_sum"],
                             "blob_max": blob["blob_max"],
                             "blob_area": blob["blob_area"],
-                        })
+                        }
+                        for key in YOLO_META_KEYS:
+                            if blob.get(key) is not None:
+                                candidate[key] = blob[key]
+                        candidates.append(candidate)
 
                     if not candidates:
                         continue
@@ -337,6 +400,13 @@ def run_video_pipeline(
                         "frame_index": fi,
                         "candidates": candidates,
                     }
+                    if top.get("yolo_conf") is not None:
+                        detection["yolo_conf"] = top["yolo_conf"]
+                    if top.get("source") is not None:
+                        detection["source"] = top["source"]
+                    for key in ("static_count", "static_status", "static_zone_id"):
+                        if top.get(key) is not None:
+                            detection[key] = top[key]
                     try:
                         result_queue.put_nowait(detection)
                     except Exception:

@@ -22,7 +22,7 @@ class ModelConfig(BaseModel):
     threshold: float = 0.3  # not needed for median_bg
     device: str = "cuda"  # not needed for median_bg
     heatmap_mask: list[list[int]] = []
-    detector_type: str = "auto"  # "auto" | "median_bg"
+    detector_type: str = "auto"  # "auto" | "tracknet" | "median_bg" | "yolo_roadmap"
 
 
 class ServerConfig(BaseModel):
@@ -69,6 +69,12 @@ class ExportConfig(BaseModel):
     endpoint: str = "https://tennisync.top/api/admin/SpaceParties/reportData"
 
 
+class RuntimeConfig(BaseModel):
+    # Live camera preview frame stride when not recording. 2 keeps dashboard
+    # preview near 8-12 FPS under YOLO load without sending every frame.
+    preview_stride: int = 2
+
+
 class HybridBounceConfig(BaseModel):
     z_max: float = 0.8
     min_seg_len: int = 8
@@ -104,6 +110,7 @@ class AppConfig(BaseModel):
     player_detection: PlayerDetectionConfig = PlayerDetectionConfig()
     serial_numbers: dict[str, str] = {}
     export: ExportConfig = ExportConfig()
+    runtime: RuntimeConfig = RuntimeConfig()
     bounce_detection: BounceDetectionConfig = BounceDetectionConfig()
 
 

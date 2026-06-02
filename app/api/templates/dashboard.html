@@ -75,6 +75,11 @@ body{font-family:'Lato',sans-serif;background:var(--bg);color:var(--text);height
 .func-list{background:var(--card-bg);padding:12px 14px;display:flex;flex-direction:column;gap:8px}
 .func-item{display:flex;align-items:center;justify-content:space-between}
 .func-item span{font-size:12px}
+.func-select{background:#202020;border:1px solid #444;color:var(--text);border-radius:4px;font-size:11px;padding:3px 6px;outline:none;cursor:pointer}
+.func-select:focus{border-color:var(--accent)}
+.func-status{font-size:10px;color:var(--text-muted);max-width:150px;text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.func-status.warn{color:#ff9800}
+.func-status.ok{color:#4caf50}
 .toggle{width:36px;height:18px;background:#555;border-radius:9px;position:relative;cursor:pointer;transition:background .2s}
 .toggle.on{background:var(--cam-green)}
 .toggle::after{content:'';position:absolute;top:2px;left:2px;width:14px;height:14px;background:#fff;border-radius:50%;transition:left .2s}
@@ -109,6 +114,7 @@ body{font-family:'Lato',sans-serif;background:var(--bg);color:var(--text);height
 .state-badge.error{background:rgba(239,68,68,.2);color:#ef4444}
 .state-badge.starting{background:rgba(234,179,8,.2);color:#eab308}
 .state-badge.completed{background:rgba(95,177,223,.2);color:var(--accent)}
+.state-badge.noinfer{background:rgba(255,152,0,.2);color:#ff9800}
 
 /* ---- Video grid ---- */
 #video-container{width:100%;height:100%;display:grid;gap:2px;background:#000;overflow:hidden}
@@ -500,9 +506,21 @@ body{font-family:'Lato',sans-serif;background:var(--bg);color:var(--text);height
         <div>
           <div class="section-title">Function</div>
           <div class="func-list">
+            <div class="func-item"><span>Model</span><select class="func-select" id="live-model-select" onchange="switchLiveModel(this.value)">
+              <option value="tracknet">TrackNet ONNX</option>
+              <option value="yolo_roadmap">YOLO</option>
+            </select></div>
+            <div class="func-item"><span>YOLO Static</span><span class="func-status" id="yolo-static-status">-</span></div>
             <div class="func-item"><span>Track</span><div class="toggle on" id="tog-track" onclick="toggleTrackBall(this)"></div></div>
             <div class="func-item"><span>ML Rally</span><div class="toggle" id="tog-ml-rally" onclick="toggleMLRally(this)"></div></div>
             <div class="func-item"><span>Bounce Det.</span><div class="toggle on" id="tog-bounce" onclick="toggleBounce(this)"></div></div>
+            <div class="func-item"><span>Bounce Mode</span><select class="func-select" id="bounce-mode-select" onchange="setBounceMode(this.value)">
+              <option value="stereo">Stereo 3D</option>
+              <option value="mono_cam68">Mono cam68</option>
+              <option value="mono_cam66">Mono cam66</option>
+            </select></div>
+            <div class="func-item"><span>YOLO Events</span><span class="func-status" id="yolo-events-status">-</span></div>
+            <div class="func-item"><span>Debug Overlay</span><div class="toggle" id="tog-debug-overlay" onclick="toggleDebugOverlay(this)"></div></div>
             <div class="func-item"><span>Net Speed</span><div class="toggle on" id="tog-net-crossing" onclick="toggleNetCrossing(this)"></div></div>
             <div class="func-item"><span>OCR Align</span><div class="toggle" id="tog-ocr" onclick="toggleOCRAlign(this)"></div></div>
             <div class="func-item"><span>3D Push</span><div class="toggle" id="tog-3d-push" onclick="toggle3DPush(this)"></div></div>
@@ -511,7 +529,13 @@ body{font-family:'Lato',sans-serif;background:var(--bg);color:var(--text);height
 
         <!-- Mini Map -->
         <div class="minimap-section">
-          <div class="section-title">Mini Map</div>
+          <div class="section-title" style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+            <span>Mini Map</span>
+            <span style="display:flex;gap:4px">
+              <button onclick="flipMinimap()" title="Flip minimap direction" style="width:38px;height:22px;border:1px solid #555;background:#202020;color:#ccc;border-radius:4px;cursor:pointer;font-size:12px;line-height:18px">Flip</button>
+              <button onclick="clearMinimapBounces()" title="Clear minimap bounces" style="width:22px;height:22px;border:1px solid #555;background:#202020;color:#ccc;border-radius:4px;cursor:pointer;font-size:13px;line-height:18px">&#8635;</button>
+            </span>
+          </div>
           <canvas id="minimap" width="300" height="500"></canvas>
           <div class="minimap-footer" style="flex-direction:column;align-items:stretch;gap:6px">
             <div style="display:flex;align-items:center;gap:8px">
@@ -704,7 +728,9 @@ body{font-family:'Lato',sans-serif;background:var(--bg);color:var(--text);height
               <button class="vt-model-btn active" data-model="hrnet" onclick="vtSwitchModel('hrnet')"
                 style="padding:3px 10px;border:none;cursor:pointer;font-size:10px;font-weight:600;background:#4caf50;color:#fff">HRNet</button>
               <button class="vt-model-btn" data-model="tracknet" onclick="vtSwitchModel('tracknet')"
-                style="padding:3px 10px;border:none;cursor:pointer;font-size:10px;font-weight:600;background:var(--card-bg);color:#aaa">TrackNet</button>
+                style="padding:3px 10px;border:none;cursor:pointer;font-size:10px;font-weight:600;background:var(--card-bg);color:#aaa">TrackNet ONNX</button>
+              <button class="vt-model-btn" data-model="yolo_roadmap" onclick="vtSwitchModel('yolo_roadmap')"
+                style="padding:3px 10px;border:none;cursor:pointer;font-size:10px;font-weight:600;background:var(--card-bg);color:#aaa">YOLO</button>
             </div>
           </div>
 
@@ -1112,6 +1138,9 @@ body{font-family:'Lato',sans-serif;background:var(--bg);color:var(--text);height
 // ============================================================
 const COURT_W=8.23,COURT_L=23.78,NET_Y=0.0,SRV_N=-6.4,SRV_F=6.4,CX=0.0,HL=11.89,HW=4.115;
 const MAX_DASHBOARD_BOUNCES=500;
+let _minimapLatestBounces=[];
+let _minimapClearCutoff={sequence:-Infinity,timestamp:-Infinity,frame:-Infinity};
+let _minimapFlipped=localStorage.getItem('tennis_minimap_flipped')==='1';
 
 const TEST_BALLS=[
   {label:'B1',x:2.694,y:-10.069, z:0.177,color:'#4f88fa'},
@@ -1219,41 +1248,62 @@ const _VIDEO_DELAY_S = 1;
 const _FRAME_W=1920, _FRAME_H=1080;
 const _ballTrail={}; // cam -> [{x,y,t}] in overlay CSS pixels
 const _ballOverlayRender={}; // cam -> eased render state
-const _TRAIL_MAX=10;
-const _BALL_HISTORY_MAX_MS=5000;
-const _BALL_STALE_S=Math.max(2.5,_VIDEO_DELAY_S+1.5);
-const _TRAIL_TTL_MS=1300;
+const _TRAIL_MAX=6;
+const _BALL_HISTORY_MAX_MS=1800;
+const _BALL_STALE_S=Math.max(1.2,_VIDEO_DELAY_S+0.7);
+const _TRAIL_TTL_MS=650;
 const _TRAIL_SAMPLE_MS=48;
 const _OVERLAY_FRAME_MS=33;
+const _OVERLAY_BIG_JUMP_PX=95;
 let _ballOverlayLastPaint=0;
 const _ballOverlayHistory={}; // cam -> [{receivedAt, det}]
+let _debugOverlayEnabled=false;
 
 function _isFinitePoint(x,y){
   return Number.isFinite(Number(x))&&Number.isFinite(Number(y));
 }
 
-function _normalizeOverlayDet(cam,det){
+function clearBallOverlayState(){
+  for(const obj of [_ballOverlayHistory,_ballTrail,_ballOverlayRender]){
+    Object.keys(obj).forEach(k=>delete obj[k]);
+  }
+}
+
+function toggleDebugOverlay(el){
+  _debugOverlayEnabled=!_debugOverlayEnabled;
+  if(el) el.classList.toggle('on',_debugOverlayEnabled);
+}
+
+function _normalizeOverlayDet(cam,det,debugDet){
   if(!det||!_isFinitePoint(det.pixel_x,det.pixel_y)) return null;
-  const ts=Number(det.timestamp||0);
-  if(ts>0 && (Date.now()/1000-ts)>_BALL_STALE_S) return null;
+  const captureTs=Number(det.capture_ts||det.timestamp||0);
+  if(captureTs>0 && (Date.now()/1000-captureTs)>_BALL_STALE_S) return null;
   return {
     camera_name:cam,
     pixel_x:Number(det.pixel_x),
     pixel_y:Number(det.pixel_y),
-    timestamp:ts||null,
-    capture_ts:Number(det.capture_ts||0)||null,
+    timestamp:Number(det.timestamp||0)||null,
+    capture_ts:captureTs||null,
     frame_index:det.frame_index,
-    confidence:Number(det.confidence||det.blob_sum||0)||0,
-    candidates:Array.isArray(det.candidates)
-      ?det.candidates.filter(c=>_isFinitePoint(c.pixel_x,c.pixel_y)).slice(0,4)
-      :[]
+    confidence:Number(det.confidence||0)||0,
+    model:det.model||'',
+    display_source:det.display_source||'raw_top1',
+    quality:det.quality||'medium',
+    debug:{
+      static_status:debugDet?.static_status,
+      static_zone_id:debugDet?.static_zone_id,
+      source:debugDet?.source,
+      candidates:Array.isArray(debugDet?.candidates)
+        ?debugDet.candidates.filter(c=>_isFinitePoint(c.pixel_x,c.pixel_y)).slice(0,8)
+        :[]
+    }
   };
 }
 
-function rememberBallOverlaySnapshot(latestDets){
+function rememberBallOverlaySnapshot(overlayDets,debugDets){
   const now=Date.now();
-  for(const [cam,det] of Object.entries(latestDets||{})){
-    const clean=_normalizeOverlayDet(cam,det);
+  for(const [cam,det] of Object.entries(overlayDets||{})){
+    const clean=_normalizeOverlayDet(cam,det,debugDets?.[cam]);
     if(!clean) continue;
     const hist=_ballOverlayHistory[cam]||(_ballOverlayHistory[cam]=[]);
     const last=hist[hist.length-1];
@@ -1348,7 +1398,11 @@ function _updateBallRenderState(cam,bx,by,cw,ch,now){
   }else{
     const dt=Math.min(120,Math.max(16,now-(state.lastDraw||now)));
     const dist=Math.hypot(bx-state.x,by-state.y);
-    const ease=dist>140?0.42:(1-Math.exp(-dt/82));
+    if(dist>_OVERLAY_BIG_JUMP_PX){
+      _ballTrail[cam]=[];
+      state.x=bx; state.y=by;
+    }
+    const ease=dist>_OVERLAY_BIG_JUMP_PX?1:(1-Math.exp(-dt/70));
     state.x+=((bx-state.x)*ease);
     state.y+=((by-state.y)*ease);
   }
@@ -1368,34 +1422,64 @@ function _updateBallRenderState(cam,bx,by,cw,ch,now){
   return state;
 }
 
-function _drawBallMarker(ctx,bx,by){
-  // Hollow marker: visible on dark/bright video, but it does not cover the ball.
+function _drawBallMarker(ctx,bx,by,quality){
   ctx.save();
   ctx.lineCap='round';
   ctx.globalCompositeOperation='source-over';
-  ctx.shadowColor='rgba(0,0,0,.58)';
-  ctx.shadowBlur=5;
+  ctx.shadowColor='rgba(0,0,0,.72)';
+  ctx.shadowBlur=4;
 
+  const locked=quality==='locked'||quality==='high';
   ctx.beginPath();
-  ctx.arc(bx,by,7.2,0,Math.PI*2);
-  ctx.strokeStyle='rgba(220,255,91,.82)';
-  ctx.lineWidth=1.55;
-  ctx.stroke();
-
-  ctx.shadowBlur=0;
-  ctx.beginPath();
-  ctx.arc(bx,by,10.5,0,Math.PI*2);
-  ctx.strokeStyle='rgba(220,255,91,.16)';
-  ctx.lineWidth=3.2;
-  ctx.stroke();
-
-  ctx.strokeStyle='rgba(255,255,255,.62)';
-  ctx.lineWidth=1;
-  ctx.beginPath();
-  ctx.moveTo(bx-11.5,by-6.5);ctx.lineTo(bx-11.5,by-11.5);ctx.lineTo(bx-6.5,by-11.5);
-  ctx.moveTo(bx+11.5,by+6.5);ctx.lineTo(bx+11.5,by+11.5);ctx.lineTo(bx+6.5,by+11.5);
-  ctx.stroke();
+  ctx.arc(bx,by,locked?5.2:6.0,0,Math.PI*2);
+  if(locked){
+    ctx.fillStyle='rgba(223,255,76,0.95)';
+    ctx.fill();
+    ctx.shadowBlur=0;
+    ctx.strokeStyle='rgba(255,255,255,0.85)';
+    ctx.lineWidth=1.1;
+    ctx.stroke();
+  }else{
+    ctx.globalAlpha=0.72;
+    ctx.strokeStyle='rgba(223,255,76,0.9)';
+    ctx.lineWidth=1.7;
+    ctx.stroke();
+    ctx.globalAlpha=1;
+  }
   ctx.restore();
+}
+
+function _drawDebugOverlay(ctx,det,px,py){
+  if(!_debugOverlayEnabled||!det) return;
+  const candidates=det.debug?.candidates||[];
+  candidates.forEach((c,idx)=>{
+    const cx=px(Number(c.pixel_x)),cy=py(Number(c.pixel_y));
+    ctx.beginPath();
+    ctx.arc(cx,cy,idx===0?4:3,0,Math.PI*2);
+    ctx.strokeStyle=idx===0?'rgba(255,255,255,.75)':'rgba(255,210,90,.35)';
+    ctx.lineWidth=idx===0?1.2:1;
+    ctx.stroke();
+    if(Array.isArray(c.bbox)&&c.bbox.length>=4){
+      const x1=px(Number(c.bbox[0])),y1=py(Number(c.bbox[1]));
+      const x2=px(Number(c.bbox[2])),y2=py(Number(c.bbox[3]));
+      ctx.strokeStyle='rgba(0,213,255,.45)';
+      ctx.lineWidth=1;
+      ctx.strokeRect(x1,y1,x2-x1,y2-y1);
+    }
+  });
+  const label=[
+    det.model,
+    det.display_source,
+    Number(det.confidence||0).toFixed(2),
+    det.debug?.static_status
+  ].filter(Boolean).join(' ');
+  if(label){
+    ctx.font='10px Lato';
+    ctx.fillStyle='rgba(0,0,0,.72)';
+    ctx.fillRect(px(det.pixel_x)+8,py(det.pixel_y)-18,Math.min(180,label.length*5.8+8),16);
+    ctx.fillStyle='#fff';
+    ctx.fillText(label,px(det.pixel_x)+12,py(det.pixel_y)-6);
+  }
 }
 
 function drawBallOverlays(detections){
@@ -1436,10 +1520,8 @@ function drawBallOverlays(detections){
 
     const det=detections&&detections[cam];
     if(!det||!_isFinitePoint(det.pixel_x,det.pixel_y)){
-      if(_ballTrail[cam]){
-        _ballTrail[cam]=_ballTrail[cam].filter(p=>now-p.t<_TRAIL_TTL_MS);
-        _drawCometTrail(ctx,_ballTrail[cam],now);
-      }
+      _ballTrail[cam]=[];
+      delete _ballOverlayRender[cam];
       return;
     }
 
@@ -1447,15 +1529,9 @@ function drawBallOverlays(detections){
     if(bx<ox-40||bx>ox+_FRAME_W*sx+40||by<oy-40||by>oy+_FRAME_H*sy+40) return;
     const render=_updateBallRenderState(cam,bx,by,cw,ch,now);
 
-    // Candidate ghosts stay tiny so they don't compete with the real ball.
-    (det.candidates||[]).slice(1).forEach((c,idx)=>{
-      const cx=px(Number(c.pixel_x)), cy=py(Number(c.pixel_y));
-      ctx.beginPath();ctx.arc(cx,cy,2.5+idx*0.5,0,Math.PI*2);
-      ctx.strokeStyle='rgba(255,210,90,.24)';ctx.lineWidth=1;ctx.stroke();
-    });
-
     _drawCometTrail(ctx,_ballTrail[cam],now);
-    _drawBallMarker(ctx,render.x,render.y);
+    _drawBallMarker(ctx,render.x,render.y,det.quality);
+    _drawDebugOverlay(ctx,det,px,py);
   });
 }
 
@@ -1527,6 +1603,54 @@ function updateGTStats(liveBounces) {
 }
 
 // ---- Mini Map ----
+function _minimapEventNumber(value){
+  const n=Number(value);
+  return Number.isFinite(n)?n:null;
+}
+
+function _minimapFrameValue(b){
+  return _minimapEventNumber(b?.frame_index ?? b?.frame);
+}
+
+function _isMinimapBounceAfterClear(b){
+  if(!b||b.synthetic===true) return false;
+  if(!Number.isFinite(Number(b.x))||!Number.isFinite(Number(b.y))) return false;
+  const seq=_minimapEventNumber(b.sequence);
+  if(seq!==null&&Number.isFinite(_minimapClearCutoff.sequence)){
+    return seq>_minimapClearCutoff.sequence;
+  }
+  const ts=_minimapEventNumber(b.timestamp);
+  if(ts!==null&&Number.isFinite(_minimapClearCutoff.timestamp)){
+    return ts>_minimapClearCutoff.timestamp;
+  }
+  const frame=_minimapFrameValue(b);
+  if(frame!==null&&Number.isFinite(_minimapClearCutoff.frame)){
+    return frame>_minimapClearCutoff.frame;
+  }
+  return true;
+}
+
+function filterMinimapBounces(bounces){
+  return (bounces||[]).filter(_isMinimapBounceAfterClear);
+}
+
+function clearMinimapBounces(){
+  const bounces=(_minimapLatestBounces||[])
+    .filter(b=>b&&b.synthetic!==true&&Number.isFinite(Number(b.x))&&Number.isFinite(Number(b.y)));
+  _minimapClearCutoff={
+    sequence:Math.max(-Infinity,...bounces.map(b=>_minimapEventNumber(b.sequence)).filter(v=>v!==null)),
+    timestamp:Math.max(-Infinity,...bounces.map(b=>_minimapEventNumber(b.timestamp)).filter(v=>v!==null)),
+    frame:Math.max(-Infinity,...bounces.map(b=>_minimapFrameValue(b)).filter(v=>v!==null)),
+  };
+  drawCourt(document.getElementById('minimap'),[]);
+}
+
+function flipMinimap(){
+  _minimapFlipped=!_minimapFlipped;
+  localStorage.setItem('tennis_minimap_flipped',_minimapFlipped?'1':'0');
+  drawCourt(document.getElementById('minimap'),filterMinimapBounces(_minimapLatestBounces));
+}
+
 function drawCourt(canvas, bounces){
   const ctx=canvas.getContext('2d'),W=canvas.width,H=canvas.height;
   // V2 coords with padding so out-of-court bounces are visible
@@ -1535,128 +1659,122 @@ function drawCourt(canvas, bounces){
   const margin=4, dw=W-2*margin, dh=H-2*margin;
   function tx(x){return margin+((HW+PAD_X+x)/VW)*dw}
   function ty(y){return margin+((HL+PAD_Y-y)/VH)*dh}
+  function courtToMinimap(x,y){
+    const wx=_minimapFlipped?-Number(x):Number(x);
+    const wy=_minimapFlipped?-Number(y):Number(y);
+    return {x:tx(wx),y:ty(wy)};
+  }
+  function rectBounds(x1,y1,x2,y2){
+    const p1=courtToMinimap(x1,y1);
+    const p2=courtToMinimap(x2,y2);
+    return {
+      x:Math.min(p1.x,p2.x),
+      y:Math.min(p1.y,p2.y),
+      w:Math.abs(p2.x-p1.x),
+      h:Math.abs(p2.y-p1.y),
+    };
+  }
+  function fillCourtRect(x1,y1,x2,y2,color){
+    const r=rectBounds(x1,y1,x2,y2);
+    ctx.fillStyle=color;
+    ctx.fillRect(r.x,r.y,r.w,r.h);
+  }
+  function strokeCourtRect(x1,y1,x2,y2,color,lineWidth){
+    const r=rectBounds(x1,y1,x2,y2);
+    ctx.strokeStyle=color;
+    ctx.lineWidth=lineWidth;
+    ctx.strokeRect(r.x,r.y,r.w,r.h);
+  }
+  function strokeCourtLine(x1,y1,x2,y2,color,lineWidth){
+    const p1=courtToMinimap(x1,y1);
+    const p2=courtToMinimap(x2,y2);
+    ctx.beginPath();
+    ctx.moveTo(p1.x,p1.y);
+    ctx.lineTo(p2.x,p2.y);
+    ctx.strokeStyle=color;
+    ctx.lineWidth=lineWidth;
+    ctx.stroke();
+  }
 
   const SHW=HW;  // singles = full court width for this project
   ctx.clearRect(0,0,W,H);
   ctx.fillStyle='#1a2e1a';ctx.fillRect(0,0,W,H);
   // Doubles area (dim)
-  ctx.fillStyle='#243d24';
-  ctx.fillRect(tx(-HW),ty(HL),(2*HW/VW)*dw,(2*HL/VH)*dh);
-  // Singles area (brighter — this is the IN/OUT boundary)
-  ctx.fillStyle='#2d5a3d';
-  ctx.fillRect(tx(-SHW),ty(HL),(2*SHW/VW)*dw,(2*HL/VH)*dh);
+  fillCourtRect(-HW,-HL,HW,HL,'#243d24');
+  // Singles area (brighter landing boundary)
+  fillCourtRect(-SHW,-HL,SHW,HL,'#2d5a3d');
   // Service boxes
-  ctx.fillStyle='#346845';
-  ctx.fillRect(tx(-SHW),ty(SRV_F),(2*SHW/VW)*dw,((SRV_F-SRV_N)/VH)*dh);
+  fillCourtRect(-SHW,SRV_N,SHW,SRV_F,'#346845');
 
   // Doubles outline (thin)
-  ctx.strokeStyle='rgba(255,255,255,0.3)';ctx.lineWidth=0.5;
-  ctx.strokeRect(tx(-HW),ty(HL),(2*HW/VW)*dw,(2*HL/VH)*dh);
-  // Singles outline (bright — IN/OUT boundary)
-  ctx.strokeStyle='#fff';ctx.lineWidth=1.5;
-  ctx.strokeRect(tx(-SHW),ty(HL),(2*SHW/VW)*dw,(2*HL/VH)*dh);
+  strokeCourtRect(-HW,-HL,HW,HL,'rgba(255,255,255,0.3)',0.5);
+  // Singles outline (bright landing boundary)
+  strokeCourtRect(-SHW,-HL,SHW,HL,'#fff',1.5);
   // Net
-  ctx.beginPath();ctx.moveTo(tx(-HW),ty(NET_Y));ctx.lineTo(tx(HW),ty(NET_Y));
-  ctx.strokeStyle='#ccc';ctx.lineWidth=2.5;ctx.stroke();
+  strokeCourtLine(-HW,NET_Y,HW,NET_Y,'#ccc',2.5);
   // Service lines + center
-  ctx.strokeStyle='#fff';ctx.lineWidth=1.5;
-  [SRV_N,SRV_F].forEach(y=>{ctx.beginPath();ctx.moveTo(tx(-SHW),ty(y));ctx.lineTo(tx(SHW),ty(y));ctx.stroke()});
-  ctx.beginPath();ctx.moveTo(tx(CX),ty(SRV_N));ctx.lineTo(tx(CX),ty(SRV_F));ctx.stroke();
-  ctx.beginPath();ctx.moveTo(tx(CX),ty(-HL));ctx.lineTo(tx(CX),ty(-HL+0.4));ctx.stroke();
-  ctx.beginPath();ctx.moveTo(tx(CX),ty(HL));ctx.lineTo(tx(CX),ty(HL-0.4));ctx.stroke();
+  [SRV_N,SRV_F].forEach(y=>strokeCourtLine(-SHW,y,SHW,y,'#fff',1.5));
+  strokeCourtLine(CX,SRV_N,CX,SRV_F,'#fff',1.5);
+  strokeCourtLine(CX,-HL,CX,-HL+0.4,'#fff',1.5);
+  strokeCourtLine(CX,HL,CX,HL-0.4,'#fff',1.5);
 
   // --- Bounce markers: retained session history. Older bounces are dim;
-  // the latest five keep labels/speed so the map stays readable.
+  // only real landing events are drawn on the homepage minimap.
   if(bounces&&bounces.length){
-    const visibleBounces = bounces.slice(-MAX_DASHBOARD_BOUNCES);
-    const firstSeqFallback = Math.max(1, bounces.length - visibleBounces.length + 1);
-    visibleBounces.forEach((b,i)=>{
-      const bx=tx(b.x),by=ty(b.y);
-      const isSynthetic = b.synthetic === true;
-      const isIn = b.in_court;
-      const age = visibleBounces.length - 1 - i;
-      const isRecent = age < 5;
-      const num = b.sequence || (firstSeqFallback + i);
-      const r = isRecent ? (age === 0 ? 8 : 6) : 4;
-      ctx.globalAlpha = isRecent
-        ? (age === 0 ? 1.0 : age === 1 ? 0.8 : age === 2 ? 0.6 : age === 3 ? 0.4 : 0.25)
-        : 0.2;
-
-      if(isSynthetic){
-        // Amber X for rally-end markers with no real landing
-        ctx.strokeStyle='#ff9800';ctx.lineWidth=isRecent?2.5:1.5;
-        ctx.beginPath();ctx.moveTo(bx-r,by-r);ctx.lineTo(bx+r,by+r);ctx.stroke();
-        ctx.beginPath();ctx.moveTo(bx+r,by-r);ctx.lineTo(bx-r,by+r);ctx.stroke();
-      } else if(isIn){
-        const color='#4caf50';
-        ctx.beginPath();ctx.arc(bx,by,r,0,Math.PI*2);
-        ctx.fillStyle=color;ctx.fill();
-        ctx.strokeStyle='#fff';ctx.lineWidth=isRecent?1.5:0.8;ctx.stroke();
-      } else {
-        const color='#f44336';
-        ctx.beginPath();ctx.arc(bx,by,r,0,Math.PI*2);
-        ctx.strokeStyle=color;ctx.lineWidth=isRecent?2.5:1.5;ctx.stroke();
-      }
-
-      if(isRecent){
-        ctx.font='bold 9px Lato';ctx.fillStyle='#fff';
-        ctx.textAlign='center';ctx.textBaseline='middle';
-        ctx.fillText(num,bx,by+1);
-        ctx.textAlign='start';ctx.textBaseline='alphabetic';
-
-        // Label: IN/OUT for real bounces, end_reason for synthetic markers
-        const labelColor = isSynthetic ? '#ff9800' : (isIn ? '#4caf50' : '#f44336');
-        ctx.fillStyle=labelColor;ctx.font='bold 8px Lato';
-        const primaryLabel = isSynthetic ? (b.end_reason || 'END').toUpperCase()
-                                         : (isIn ? 'IN' : 'OUT');
-        ctx.fillText(primaryLabel,bx+r+4,by+3);
-        if(b.speed_kmh){
-          ctx.fillStyle='#ffd700';ctx.font='bold 9px Lato';
-          ctx.fillText(Math.round(b.speed_kmh)+'km/h',bx+r+4,by+14);
-        } else if(b.end_reason && !isSynthetic){
-          // Bounce that also ended a rally; show reason below IN/OUT.
-          ctx.fillStyle='#ff9800';ctx.font='bold 8px Lato';
-          ctx.fillText(b.end_reason.toUpperCase(),bx+r+4,by+14);
-        }
-      }
+    const realBounces = bounces
+      .filter(b=>b&&b.synthetic!==true&&Number.isFinite(Number(b.x))&&Number.isFinite(Number(b.y)))
+      .slice(-MAX_DASHBOARD_BOUNCES);
+    function latestBy(keyFn){
+      let best=null,bestVal=null;
+      realBounces.forEach(b=>{
+        const val=keyFn(b);
+        if(val===null) return;
+        if(best===null||val>bestVal){best=b;bestVal=val;}
+      });
+      return best;
+    }
+    const latestBounce =
+      latestBy(b=>_minimapEventNumber(b.sequence)) ||
+      latestBy(b=>_minimapEventNumber(b.timestamp)) ||
+      latestBy(b=>_minimapFrameValue(b)) ||
+      realBounces[realBounces.length-1];
+    function drawBounceDot(b,latest){
+      const p=courtToMinimap(b.x,b.y);
       ctx.globalAlpha=1.0;
-    });
-  }
-
-  // --- GT bounces: blue diamonds (drawn underneath live bounces) ---
-  if(_gtLoaded && _gtBounces.length){
-    _gtBounces.forEach((gb,i)=>{
-      const gx=tx(gb.x), gy=ty(gb.y);
-      const r=5;
-      // Check if matched by any live bounce
-      let isMatched = false;
-      if(bounces&&bounces.length){
-        isMatched = bounces.some(lb => {
-          const d = Math.sqrt(Math.pow(lb.x-gb.x,2)+Math.pow(lb.y-gb.y,2));
-          return d < GT_MATCH_TOLERANCE;
-        });
-      }
-      // Diamond shape
       ctx.beginPath();
-      ctx.moveTo(gx, gy-r); ctx.lineTo(gx+r, gy);
-      ctx.lineTo(gx, gy+r); ctx.lineTo(gx-r, gy);
-      ctx.closePath();
-      if(isMatched){
-        ctx.fillStyle='rgba(76,175,80,0.5)'; ctx.fill();
-        ctx.strokeStyle='#4caf50';
-      } else {
-        ctx.fillStyle='rgba(79,195,247,0.3)'; ctx.fill();
-        ctx.strokeStyle='#4fc3f7';
+      if(b.in_court===false){
+        if(latest){
+          ctx.arc(p.x,p.y,10,0,Math.PI*2);
+          ctx.strokeStyle='rgba(244,67,54,0.45)';
+          ctx.lineWidth=2;
+          ctx.stroke();
+          ctx.beginPath();
+        }
+        ctx.arc(p.x,p.y,latest?6:5,0,Math.PI*2);
+        ctx.strokeStyle='#f44336';
+        ctx.lineWidth=latest?2.5:2;
+        ctx.stroke();
+      }else{
+        if(latest){
+          ctx.arc(p.x,p.y,9,0,Math.PI*2);
+          ctx.strokeStyle='rgba(255,255,255,0.7)';
+          ctx.lineWidth=1.5;
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.arc(p.x,p.y,7,0,Math.PI*2);
+          ctx.strokeStyle='rgba(76,175,80,0.5)';
+          ctx.lineWidth=2;
+          ctx.stroke();
+          ctx.beginPath();
+        }
+        ctx.arc(p.x,p.y,latest?5:4,0,Math.PI*2);
+        ctx.fillStyle='#4caf50';
+        ctx.fill();
       }
-      ctx.lineWidth=1.5; ctx.stroke();
-      // GT label
-      ctx.font='7px Lato'; ctx.fillStyle='#4fc3f7';
-      ctx.textAlign='center';
-      ctx.fillText('G'+(i+1), gx, gy-r-3);
-      ctx.textAlign='start';
-    });
+    }
+    realBounces.forEach(b=>drawBounceDot(b,false));
+    if(latestBounce) drawBounceDot(latestBounce,true);
   }
-
 }
 
 // ---- 3D Map ----
@@ -1948,6 +2066,23 @@ async function toggleBounce(el){
   catch(e){ el.classList.toggle('on'); console.error('toggleBounce failed',e); }
 }
 
+async function setBounceMode(mode){
+  const el=document.getElementById('bounce-mode-select');
+  const prev=el?.dataset.prev || 'stereo';
+  try{
+    const r=await fetch(`/api/function/bounce-mode/${encodeURIComponent(mode)}`,{method:'POST'});
+    if(!r.ok) throw new Error(await r.text());
+    const data=await r.json();
+    if(el){
+      el.value=data.mode || mode;
+      el.dataset.prev=el.value;
+    }
+  }catch(e){
+    if(el) el.value=prev;
+    console.error('setBounceMode failed',e);
+  }
+}
+
 async function toggleNetCrossing(el){
   el.classList.toggle('on');
   const state = el.classList.contains('on') ? 'on' : 'off';
@@ -2158,6 +2293,7 @@ document.addEventListener('keydown',e=>{
 
 // ---- FFmpeg Recording (video + audio) ----
 let _recordingAV=false,_recordingAVStopping=false,_recAVStartTime=null,_recAVTimer=null;
+let _statusPollInFlight=false;
 
 async function toggleRecordingAV(){
   const btn=document.getElementById('rec-av-btn');
@@ -2189,32 +2325,103 @@ function _updateRecAVDuration(){
   if(txt)txt.textContent='AV '+m+':'+ss;
 }
 
+function updateYoloStaticStatus(pipelines){
+  const el=document.getElementById('yolo-static-status');
+  if(!el)return;
+  const stats=Object.values(pipelines||{})
+    .map(p=>p.detector_stats)
+    .filter(s=>s&&s.type==='yolo_roadmap');
+  if(!stats.length){
+    el.textContent='-';
+    el.className='func-status';
+    return;
+  }
+  const total=(key)=>stats.reduce((sum,s)=>sum+Number(s[key]||0),0);
+  const zones=total('active_static_zones');
+  const blocked=total('static_blocked');
+  const released=total('motion_released');
+  const failOpen=total('static_fail_open_remaining');
+  el.textContent=`${zones} zone / ${blocked} block / ${released} move`;
+  el.title=stats.map(s=>{
+    const z=(s.zones||[]).map(zone=>`#${zone.id}@${zone.x},${zone.y} r${zone.radius}`).join('; ');
+    return `raw=${s.raw_detections||0}, kept=${s.kept_detections||0}, failOpen=${s.static_fail_open_remaining||0}, zones=${z||'-'}`;
+  }).join('\n');
+  el.className='func-status '+(failOpen>0?'warn':zones>0?'ok':'');
+}
+
+function updateYoloEventStatus(analytics,pipelines){
+  const el=document.getElementById('yolo-events-status');
+  if(!el)return;
+  const model=document.getElementById('live-model-select')?.value||'';
+  const hasYoloStats=Object.values(pipelines||{})
+    .some(p=>p.detector_stats&&p.detector_stats.type==='yolo_roadmap');
+  if(model!=='yolo_roadmap'&&!hasYoloStats){
+    el.textContent='-';
+    el.className='func-status';
+    el.title='';
+    return;
+  }
+  const mode=analytics?.bounce_mode||'stereo';
+  if(mode==='mono_cam66'||mode==='mono_cam68'){
+    el.textContent=mode.replace('mono_','')+' active';
+    el.className='func-status ok';
+    el.title='YOLO bounce / hit / speed events are produced by the selected mono camera.';
+  }else{
+    el.textContent='Stereo: 3D only';
+    el.className='func-status warn';
+    el.title='In Stereo mode YOLO only supplies 2D detections; YOLO single-camera bounce / hit / speed events require Mono cam66 or Mono cam68.';
+  }
+}
+
 async function poll(){
+  if(_statusPollInFlight) return;
+  _statusPollInFlight=true;
   try{
-    const r=await fetch('/api/status');
+    const r=await fetch('/api/status?dashboard=1&event_limit=40');
     const d=await r.json();
     for(const[name,p]of Object.entries(d.pipelines)){
       if(name.startsWith('_')) continue; // skip internal pipelines
       const badge=document.getElementById('badge-'+name);
       const fpsEl=document.getElementById('fps-'+name);
-      if(badge){badge.className='state-badge '+p.state;badge.textContent=p.state}
+      if(badge){
+        const ready=p.inference_ready!==false;
+        const enabled=p.inference_enabled!==false;
+        if(p.state==='running'&&!ready){
+          badge.className='state-badge noinfer';
+          badge.textContent='NO MODEL';
+        }else if(p.state==='running'&&!enabled){
+          badge.className='state-badge noinfer';
+          badge.textContent='TRACK OFF';
+        }else{
+          badge.className='state-badge '+p.state;
+          badge.textContent=p.state;
+        }
+        badge.title=p.inference_error||p.error_msg||'';
+      }
       if(fpsEl)fpsEl.textContent=p.fps.toFixed(1);
     }
     renderVideoArea(d.pipelines);
+    updateYoloStaticStatus(d.pipelines);
 
     // Extract analytics data from status
     const analytics=d.analytics||{};
-    const recentBounces=analytics.recent_bounces||[];
-    const totalBounces=analytics.total_bounces ?? recentBounces.length;
+    const rawRecentBounces=analytics.recent_bounces||[];
+    _minimapLatestBounces=rawRecentBounces;
+    const recentBounces=filterMinimapBounces(rawRecentBounces);
+    const totalBounces=analytics.total_bounces ?? rawRecentBounces.length;
     const rallyState=analytics.rally_state||{};
     const latestCrossing=analytics.latest_net_crossing||null;
+    const latestSingleCamSpeed=analytics.latest_single_cam_speed_event||null;
     const lastFrameSpeed=Number(analytics.last_frame_speed_kmh||0);
+    updateYoloEventStatus(analytics,d.pipelines);
 
     const b=d.latest_ball_3d;
     const latestDets=d.latest_detections||null;
-    rememberBallOverlaySnapshot(latestDets);
+    const hasOverlayDets=Object.prototype.hasOwnProperty.call(d,'latest_overlay_detections');
+    const latestOverlayDets=hasOverlayDets?(d.latest_overlay_detections||{}):latestDets;
+    rememberBallOverlaySnapshot(latestOverlayDets,latestDets);
     drawCourt(document.getElementById('minimap'),recentBounces);
-    updateGTStats(recentBounces);
+    updateGTStats(rawRecentBounces);
 
     // Update rally state display
     const stateEl=document.getElementById('rally-state');
@@ -2230,20 +2437,25 @@ async function poll(){
     if(bounceEl) bounceEl.textContent=totalBounces||0;
     if(speedEl){
       let speedToShow=0;
+      if(latestSingleCamSpeed && Number.isFinite(Number(latestSingleCamSpeed.speed_kmh||0))){
+        const speedAge=(Date.now()/1000)-Number(latestSingleCamSpeed.timestamp||0);
+        if(speedAge <= 3.0) speedToShow=Number(latestSingleCamSpeed.speed_kmh||0);
+      }
       if(latestCrossing && Number.isFinite(Number(latestCrossing.speed_kmh||0))){
         const crossingAge=(Date.now()/1000)-Number(latestCrossing.timestamp||0);
-        if(crossingAge <= 3.0) speedToShow=Number(latestCrossing.speed_kmh||0);
+        if(speedToShow <= 0 && crossingAge <= 3.0) speedToShow=Number(latestCrossing.speed_kmh||0);
       }
       if(speedToShow <= 0 && Number.isFinite(lastFrameSpeed)) speedToShow=lastFrameSpeed;
       speedEl.textContent=speedToShow > 0 ? `${Math.round(speedToShow)} km/h` : '- km/h';
     }
   }catch(e){console.error(e)}
+  finally{_statusPollInFlight=false;}
 }
 
 // Init
 drawCourt(document.getElementById('minimap'),[]);
 requestAnimationFrame(_ballOverlayLoop);
-setInterval(poll,500);
+setInterval(poll,1200);
 syncRecordingStatus();
 setInterval(syncRecordingStatus,2000);
 
@@ -2262,6 +2474,11 @@ setInterval(syncRecordingStatus,2000);
       if(el && d[key]!==undefined){
         if(d[key]) el.classList.add('on'); else el.classList.remove('on');
       }
+    }
+    const bounceModeEl=document.getElementById('bounce-mode-select');
+    if(bounceModeEl && d.bounce_mode){
+      bounceModeEl.value=d.bounce_mode;
+      bounceModeEl.dataset.prev=d.bounce_mode;
     }
   }catch(e){console.warn('syncToggles:',e)}
 })();
@@ -2286,6 +2503,8 @@ function switchPage(page){
 let _vtVideos=[];
 let _vtRunning=false;
 let _vtPhase='idle'; // 'idle'|'cam66'|'cam68'|'3d'|'done'
+let _vtCurrentModel='tracknet';
+let _vtSingleCamRun=null; // {viewNum, camera, filename} for YOLO single-camera mode
 let _vt3dPoints=[];  // computed 3D points
 let _vtFullTrajectory3D=[];  // cached full smoothed+physicsZ trajectory (stable across scrub)
 let _vtTrajectory=null;  // trajectory fit result (spatial parabola)
@@ -2309,6 +2528,40 @@ let _vtPlaybackTimeStart=0;    // clip start time (seconds) in video timeline
 let _vtPlaybackTimeEnd=0;      // clip end time (seconds) in video timeline
 let _vtPlaybackTimeCurrent=0;  // current playback time (seconds)
 let _vtPlaybackFPS=30;         // video frame rate for stepping
+
+function vtPlaybackPointTime(pt){
+  if(!pt) return _vtPlaybackTimeStart||0;
+  const direct=Number(pt.t);
+  if(Number.isFinite(direct)) return direct;
+  const fi=Number(pt.frame_index ?? pt.frame ?? pt.frame_a ?? 0);
+  const fps=(_vtViewRanges&&_vtViewRanges[1]&&_vtViewRanges[1].fps>0)
+    ?_vtViewRanges[1].fps
+    :(_vtPlaybackFPS||30);
+  return Number.isFinite(fi)?fi/Math.max(fps,1):(_vtPlaybackTimeStart||0);
+}
+
+function vtOrderedDetectionCameras(){
+  const cams=Object.keys(_vtLiveDetections||{});
+  const preferred=['cam66','cam68'].filter(cam=>cams.includes(cam));
+  const rest=cams.filter(cam=>!preferred.includes(cam)).sort();
+  return preferred.concat(rest);
+}
+
+function vtBuildPlaybackPoints(points,matches){
+  const byFrame=new Map((matches||[]).map(m=>[Number(m.frame_index),m]));
+  return (points||[]).map(p=>{
+    const frame=Number(p.frame_index ?? p.frame ?? p.frame_a ?? 0);
+    const m=byFrame.get(frame);
+    const out={...p,frame_index:frame,t:vtPlaybackPointTime({...p,frame_index:frame})};
+    const c1=m?.cam1;
+    const c2=m?.cam2;
+    if(c1&&c1.pixel_x!=null&&c1.pixel_y!=null) out.cam1_pixel=[Number(c1.pixel_x),Number(c1.pixel_y)];
+    if(c2&&c2.pixel_x!=null&&c2.pixel_y!=null) out.cam2_pixel=[Number(c2.pixel_x),Number(c2.pixel_y)];
+    if(c1&&c1.x!=null&&c1.y!=null) out.cam1_world=[Number(c1.x),Number(c1.y)];
+    if(c2&&c2.x!=null&&c2.y!=null) out.cam2_world=[Number(c2.x),Number(c2.y)];
+    return out;
+  });
+}
 
 // ---- Rally selector & stats helpers ----
 
@@ -2962,11 +3215,6 @@ async function vtImportAnnotations(){
     const bounces=d.bounces||[];
     const stats=d.stats||{};
 
-    // Populate _vt3dPoints for 3D rendering
-    _vt3dPoints=pts;
-    _vtFullTrajectory3D=pts;  // cache for stable scrubbing
-    vtUpdate3DBalls(_vt3dPoints);
-
     // Build _vtLiveMatches for minimap + timeline + table
     _vtLiveMatches=pts.map(p=>({
       frame_index:p.frame_index,
@@ -2974,6 +3222,10 @@ async function vtImportAnnotations(){
       cam2:{pixel_x:p.cam2_pixel[0],pixel_y:p.cam2_pixel[1],x:p.cam2_world[0],y:p.cam2_world[1]},
       avgX:p.x, avgY:p.y
     }));
+    // Populate _vt3dPoints for 3D rendering and playback overlays.
+    _vt3dPoints=vtBuildPlaybackPoints(pts,_vtLiveMatches);
+    _vtFullTrajectory3D=_vt3dPoints;  // cache for stable scrubbing
+    vtUpdate3DBalls(_vt3dPoints);
     _vtLiveBounces=bounces;
 
     // Set up slider range
@@ -3089,7 +3341,8 @@ function vtOnViewSelect(viewNum){
 function vtUpdateRunButton(){
   const v1=document.getElementById('vt-view1-video').value;
   const v2=document.getElementById('vt-view2-video').value;
-  document.getElementById('vt-run-btn').disabled=!(v1&&v2);
+  const singleOk=_vtCurrentModel==='yolo_roadmap'&&(v1||v2);
+  document.getElementById('vt-run-btn').disabled=!(singleOk||(v1&&v2));
 }
 
 // Get anchor clip duration (seconds) from View 1
@@ -3306,30 +3559,65 @@ function vtFormatTime(s){
 }
 
 // ---- Model switch ----
-async function vtSwitchModel(name){
-  try{
-    const r=await fetch('/api/model/switch/'+name,{method:'POST'});
-    const d=await r.json();
-    // Update button states
-    document.querySelectorAll('#vt-model-switch button').forEach(b=>{
-      if(b.dataset.model===name){
-        b.style.background='#4caf50'; b.style.color='#fff';
-      } else {
-        b.style.background='var(--card-bg)'; b.style.color='#aaa';
-      }
-    });
-    console.log('Model switched to',d.model,d.path);
-  }catch(e){console.error('Model switch failed:',e)}
-}
-// Load current model state on init
-fetch('/api/model/current').then(r=>r.json()).then(d=>{
+function updateModelControls(model){
+  _vtCurrentModel=model||_vtCurrentModel;
+  const liveSel=document.getElementById('live-model-select');
+  if(liveSel){
+    liveSel.value=_vtCurrentModel;
+    liveSel.dataset.prev=_vtCurrentModel;
+  }
   document.querySelectorAll('#vt-model-switch button').forEach(b=>{
-    if(b.dataset.model===d.model){
+    if(b.dataset.model===_vtCurrentModel){
       b.style.background='#4caf50'; b.style.color='#fff';
     } else {
       b.style.background='var(--card-bg)'; b.style.color='#aaa';
     }
   });
+  vtUpdateRunButton();
+}
+
+async function switchLiveModel(name){
+  const el=document.getElementById('live-model-select');
+  const prev=el?.dataset.prev||_vtCurrentModel||'tracknet';
+  try{
+    const r=await fetch('/api/model/switch/'+name,{method:'POST'});
+    if(!r.ok) throw new Error(await r.text());
+    const d=await r.json();
+    updateModelControls(d.model||name);
+    if(d.bounce_mode){
+      const bounceModeEl=document.getElementById('bounce-mode-select');
+      if(bounceModeEl){
+        bounceModeEl.value=d.bounce_mode;
+        bounceModeEl.dataset.prev=d.bounce_mode;
+      }
+    }
+    clearBallOverlayState();
+    console.log('Live model switched to',d.model,d.path,'restarted:',d.restarted||[]);
+  }catch(e){
+    console.error('Live model switch failed:',e);
+    if(el) el.value=prev;
+  }
+}
+
+async function vtSwitchModel(name){
+  try{
+    const r=await fetch('/api/model/switch/'+name,{method:'POST'});
+    const d=await r.json();
+    updateModelControls(d.model||name);
+    if(d.bounce_mode){
+      const bounceModeEl=document.getElementById('bounce-mode-select');
+      if(bounceModeEl){
+        bounceModeEl.value=d.bounce_mode;
+        bounceModeEl.dataset.prev=d.bounce_mode;
+      }
+    }
+    clearBallOverlayState();
+    console.log('Model switched to',d.model,d.path);
+  }catch(e){console.error('Model switch failed:',e)}
+}
+// Load current model state on init
+fetch('/api/model/current').then(r=>r.json()).then(d=>{
+  updateModelControls(d.model||_vtCurrentModel);
 }).catch(()=>{});
 
 // ---- Run / Stop (sequential dual-video processing) ----
@@ -3345,6 +3633,11 @@ async function vtToggleRun(){
 
   const vid1=document.getElementById('vt-view1-video').value;
   const vid2=document.getElementById('vt-view2-video').value;
+  if(_vtCurrentModel==='yolo_roadmap'){
+    if(!vid1&&!vid2) return;
+    await vtRunYoloSingleCamera();
+    return;
+  }
   if(!vid1||!vid2) return;
 
   // Exit playback mode if active
@@ -3487,6 +3780,198 @@ async function vtToggleRun(){
   if(fl){const f=parseInt(slider?.value)||0;fl.textContent='f'+f;}
 }
 
+function vtBuildSingleCamMatches(camera, viewNum){
+  const dets=[...(_vtLiveDetections[camera]||[])].sort((a,b)=>a.frame_index-b.frame_index);
+  return dets.filter(d=>d.x!=null&&d.y!=null).map(d=>{
+    const m={
+      frame_index:d.frame_index,
+      cam1Name:viewNum===1?camera:null,
+      cam2Name:viewNum===2?camera:null,
+      avgX:d.x,
+      avgY:d.y
+    };
+    if(viewNum===1){m.cam1=d;m.cam2=null;} else {m.cam1=null;m.cam2=d;}
+    return m;
+  });
+}
+
+async function vtRunYoloSingleCamera(){
+  const vid1=document.getElementById('vt-view1-video').value;
+  const vid2=document.getElementById('vt-view2-video').value;
+  const viewNum=vid1?1:2;
+  const filename=viewNum===1?vid1:vid2;
+  const camera=viewNum===1?'cam66':'cam68';
+  const range=_vtViewRanges[viewNum];
+  _vtSingleCamRun={viewNum,camera,filename};
+
+  vtExitPlayback();
+  vtStartUI();
+
+  // Clear all previous detections
+  await fetch('/api/video-test/clear-detections',{
+    method:'POST',headers:{'Content-Type':'application/json'},body:'{}'
+  });
+
+  _vt3dPoints=[];
+  _vtFullTrajectory3D=[];
+  _vtTrajectory=null;
+  _vtLiveMatches=[];
+  _vtLiveBounces=[];
+  _vtLiveHits=[];
+  _vtLiveSpeedEvents=[];
+  _vtLiveDetections={};
+  vtUpdate3DBalls([]);
+  vtRender3DTable();
+
+  // Single-camera preview uses the legacy _video_test stream.
+  const cam1=document.getElementById('vt-live-cam1');
+  const cam2=document.getElementById('vt-live-cam2');
+  if(cam1) cam1.src=viewNum===1?'/api/camera/_video_test/stream':'';
+  if(cam2) cam2.src=viewNum===2?'/api/camera/_video_test/stream':'';
+
+  _vtPhase='single-yolo';
+  document.getElementById('vt-phase-label').textContent='Processing '+camera+' with YOLO + single-camera bounce filter...';
+  document.getElementById('vt-progress-fill').style.width='0%';
+
+  const startTime=(range.start||0)*(range.duration||0);
+  const endTime=(range.end||1)*(range.duration||0);
+  try{
+    const r=await fetch('/api/video-test/run',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({filename,start_time:startTime,end_time:endTime,camera})
+    });
+    const d=await r.json();
+    if(d.status!=='started'){vtStopUI();return;}
+    vtStartLiveSSE();
+  }catch(e){console.error(e);vtStopUI();return;}
+
+  const completed=await new Promise((resolve)=>{
+    const poll=setInterval(async()=>{
+      if(!_vtRunning){clearInterval(poll);resolve(false);return;}
+      try{
+        const r=await fetch('/api/video-test/status');
+        const d=await r.json();
+        const total=d.total_frames||1;
+        const done=d.processed_frames||0;
+        const pct=Math.round(done/total*100);
+        document.getElementById('vt-progress-fill').style.width=pct+'%';
+        document.getElementById('vt-progress-text').textContent=done+' / '+total+' frames';
+        document.getElementById('vt-progress-fps').textContent=(d.fps||0)+' fps';
+        const badge=document.getElementById('vt-state-badge');
+        badge.className='state-badge '+d.state;badge.textContent=d.state;
+        if(d.state==='completed'||d.state==='error'){
+          clearInterval(poll);
+          resolve(d.state==='completed');
+        }
+      }catch(e){console.error(e);}
+    },500);
+  });
+
+  if(!_vtRunning) return;
+  vtStopLiveSSE();
+
+  try{
+    const detResp=await fetch('/api/video-test/detections?camera='+encodeURIComponent(camera));
+    const detData=await detResp.json();
+    _vtLiveDetections[camera]=detData.detections||[];
+  }catch(e){
+    console.error('failed to fetch final single-cam detections:',e);
+  }
+
+  if(completed){
+    try{
+      const r=await fetch('/api/video-test/compute-single-cam-bounces',{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({camera})
+      });
+      const d=await r.json();
+      _vtLiveBounces=(d.bounces||[]).map(b=>({
+        frame:b.frame,
+        x:b.x,
+        y:b.y,
+        type:b.type,
+        camera:b.camera,
+        pixel_x:b.pixel_x,
+        pixel_y:b.pixel_y,
+        confidence:b.confidence,
+        source:b.source
+      }));
+      _vtLiveHits=(d.hits||[]).map(h=>({
+        frame:h.frame,
+        x:h.x,
+        y:h.y,
+        type:h.type||'HIT',
+        camera:h.camera,
+        pixel_x:h.pixel_x,
+        pixel_y:h.pixel_y,
+        confidence:h.confidence,
+        player_distance_px:h.player_distance_px,
+        source:h.source
+      }));
+      _vtLiveSpeedEvents=(d.speed_events||[]).map(s=>({
+        frame:s.frame,
+        x:s.x,
+        y:s.y,
+        pixel_x:s.pixel_x,
+        pixel_y:s.pixel_y,
+        speed_kmh:s.speed_kmh,
+        direction:s.direction,
+        source:s.source
+      }));
+      if(_vtLiveSpeedEvents.length){
+        const lastSpeed=_vtLiveSpeedEvents[_vtLiveSpeedEvents.length-1];
+        _vtLiveLastSpeed=Number(lastSpeed.speed_kmh||0);
+      }
+    }catch(e){console.error('single-cam bounce filter failed:',e);}
+  }
+
+  _vtLiveMatches=vtBuildSingleCamMatches(camera,viewNum);
+  _vtFullTrajectory3D=vtBuildPlaybackPoints(
+    _vtLiveMatches.map(m=>({frame_index:m.frame_index,x:m.avgX,y:m.avgY,z:0})),
+    _vtLiveMatches
+  );
+  _vt3dPoints=_vtFullTrajectory3D;
+  vtUpdate3DBalls(_vtFullTrajectory3D,_vtFullTrajectory3D.length-1);
+
+  if(_vtLiveMatches.length>0){
+    const minF=_vtLiveMatches[0].frame_index;
+    const maxF=_vtLiveMatches[_vtLiveMatches.length-1].frame_index;
+    const slider=document.getElementById('vt-live-slider');
+    if(slider){slider.min=minF;slider.max=maxF;slider.value=maxF;slider.disabled=false;slider.style.opacity='1';}
+    _vtLiveScrubFrame=maxF;
+  }
+
+  _vtPhase='done';
+  _vtRunning=false;
+  const badge=document.getElementById('vt-state-badge');
+  badge.className='state-badge '+(completed?'completed':'error');
+  badge.textContent=completed?'completed':'error';
+  document.getElementById('vt-phase-label').textContent=
+    'YOLO single-camera complete - '+_vtLiveMatches.length+' detections, '+_vtLiveBounces.length+' bounces, '+_vtLiveHits.length+' hits';
+
+  const btn=document.getElementById('vt-run-btn');
+  btn.classList.remove('stop');
+  document.getElementById('vt-run-text').textContent='Run Test';
+  btn.querySelector('svg').innerHTML='<path d="M8 5v14l11-7z"/>';
+  if(cam1) cam1.src='';
+  if(cam2) cam2.src='';
+
+  vtDrawLiveMinimap();
+  vtLiveBuildMarkers();
+  vtRebuildDetTable();
+  vtDrawBallOverlays(null);
+  vtUpdateSingleCamEventStats();
+
+  const pbRow=document.getElementById('vt-playback-row');
+  const saveBtn=document.getElementById('vt-save-btn');
+  const exportBtn=document.getElementById('vt-export-cvat-btn');
+  if(pbRow) pbRow.style.display='flex';
+  if(saveBtn) saveBtn.style.display='';
+  if(exportBtn) exportBtn.style.display='';
+}
+
 function vtRunSingleVideo(filename,camera,range){
   return new Promise(async(resolve)=>{
     const startTime=range.start*range.duration;
@@ -3580,6 +4065,8 @@ function vtStartUI(){
 
   // Reset live analytics state
   _vtLiveBounces=[];
+  _vtLiveHits=[];
+  _vtLiveSpeedEvents=[];
   _vtLiveRallies=[];
   _vtLiveLastSide=null;
   _vtLiveLastSpeed=0;
@@ -3626,6 +4113,8 @@ const SINGLES_HW=HW; // singles = full court width for this project
 
 // Incremental analytics state
 let _vtLiveBounces=[];     // [{idx, x, y, type}] — detected bounce events
+let _vtLiveHits=[];        // player-assisted hit events
+let _vtLiveSpeedEvents=[]; // single-camera speed trap/crossing events
 let _vtLiveRallies=[];     // [{startIdx, endIdx, startFrame, endFrame}]
 let _vtLiveLastSide=null;  // 'near'|'far' — last known side of net
 let _vtLiveLastSpeed=0;    // km/h
@@ -3651,7 +4140,7 @@ function vtLiveAnalytics(){
 
 // Compute frame-matched pairs between the two cameras
 function vtComputeLiveMatches(){
-  const cams=Object.keys(_vtLiveDetections);
+  const cams=vtOrderedDetectionCameras();
   if(cams.length<2) return [];
   // Build frame_index maps for both cameras
   const maps={};
@@ -3920,6 +4409,8 @@ function vtStartLiveSSE(){
   _vtFullTrajectory3D=[];
   _vtLiveLastUpdate=0;
   _vtLiveBounces=[];
+  _vtLiveHits=[];
+  _vtLiveSpeedEvents=[];
   _vtLiveRallies=[];
   _vtLiveLastSide=null;
   _vtLiveLastSpeed=0;
@@ -4085,8 +4576,9 @@ function vtLiveUpdateUI(){
   if(_vtLiveMatches.length>0){
     const mapFps=(_vtViewRanges&&_vtViewRanges[1])?_vtViewRanges[1].fps||25:25;
     const smoothed=vtSmoothMatches(_vtLiveMatches,mapFps);
-    const pts3d=vtComputePhysicsZ(smoothed, mapFps);
+    const pts3d=vtBuildPlaybackPoints(vtComputePhysicsZ(smoothed, mapFps),smoothed);
     _vtFullTrajectory3D=pts3d;  // cache for stable scrubbing
+    _vt3dPoints=pts3d;
     vtUpdate3DBalls(pts3d, pts3d.length-1);
   }
 
@@ -4131,6 +4623,20 @@ function vtLiveBuildMarkers(){
     const el=document.createElement('div');
     el.style.cssText='position:absolute;left:'+pct+'%;top:0;bottom:0;width:3px;background:'+color+';border-radius:1px;opacity:0.8;transform:translateX(-50%);cursor:pointer';
     el.title='B'+(i+1)+' '+b.type+' (f'+b.frame+')';
+    container.appendChild(el);
+  });
+  _vtLiveHits.forEach((h,i)=>{
+    const pct=(h.frame/maxFrame)*100;
+    const el=document.createElement('div');
+    el.style.cssText='position:absolute;left:'+pct+'%;top:2px;bottom:2px;width:3px;background:#ff9800;border-radius:1px;opacity:0.9;transform:translateX(-50%);cursor:pointer';
+    el.title='H'+(i+1)+' HIT (f'+h.frame+')';
+    container.appendChild(el);
+  });
+  _vtLiveSpeedEvents.forEach((s,i)=>{
+    const pct=(s.frame/maxFrame)*100;
+    const el=document.createElement('div');
+    el.style.cssText='position:absolute;left:'+pct+'%;top:40%;height:60%;width:2px;background:#00d5ff;border-radius:1px;opacity:0.9;transform:translateX(-50%);cursor:pointer';
+    el.title='Speed '+Math.round(Number(s.speed_kmh||0))+' km/h (f'+s.frame+')';
     container.appendChild(el);
   });
 }
@@ -4489,7 +4995,9 @@ async function vtSaveAnnotation(){
       },
       saved_at:new Date().toISOString(),
       total_matches:_vtLiveMatches.length,
-      total_bounces:_vtLiveBounces.length
+      total_bounces:_vtLiveBounces.length,
+      total_hits:_vtLiveHits.length,
+      total_speed_events:_vtLiveSpeedEvents.length
     },
     matches:_vtLiveMatches.map(m=>({
       frame_index:m.frame_index,
@@ -4497,7 +5005,9 @@ async function vtSaveAnnotation(){
       cam2:{pixel_x:m.cam2?.pixel_x,pixel_y:m.cam2?.pixel_y,x:m.cam2?.x,y:m.cam2?.y},
       avgX:m.avgX,avgY:m.avgY
     })),
-    bounces:_vtLiveBounces.map(b=>({frame:b.frame,x:b.x,y:b.y,type:b.type}))
+    bounces:_vtLiveBounces.map(b=>({frame:b.frame,x:b.x,y:b.y,type:b.type})),
+    hits:_vtLiveHits.map(h=>({frame:h.frame,x:h.x,y:h.y,type:h.type,player_distance_px:h.player_distance_px})),
+    speed_events:_vtLiveSpeedEvents.map(s=>({frame:s.frame,x:s.x,y:s.y,speed_kmh:s.speed_kmh,direction:s.direction}))
   };
   try{
     const r=await fetch('/api/annotations/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
@@ -4510,6 +5020,25 @@ async function vtSaveAnnotation(){
 }
 
 // ========== END PLAYBACK CONTROLS + SAVE/EXPORT ==========
+
+function vtUpdateSingleCamEventStats(){
+  const sSpeed=document.getElementById('vt-ls-speed');
+  const sPos=document.getElementById('vt-ls-position');
+  const sDets=document.getElementById('vt-ls-detections');
+  const sMatched=document.getElementById('vt-ls-matched');
+  const sBounces=document.getElementById('vt-ls-bounces');
+  const sRallies=document.getElementById('vt-ls-rallies');
+  const speed=_vtLiveSpeedEvents.length?_vtLiveSpeedEvents[_vtLiveSpeedEvents.length-1].speed_kmh:_vtLiveLastSpeed;
+  if(sSpeed) sSpeed.textContent=Number(speed)>0?Math.round(Number(speed)):'--';
+  if(sDets) sDets.textContent=(_vtSingleCamRun&&_vtLiveDetections[_vtSingleCamRun.camera])?_vtLiveDetections[_vtSingleCamRun.camera].length:_vtLiveMatches.length;
+  if(sMatched) sMatched.textContent=_vtLiveMatches.length;
+  if(sBounces) sBounces.textContent=_vtLiveBounces.length;
+  if(sRallies) sRallies.textContent=_vtLiveHits.length?_vtLiveHits.length+' hits':'--';
+  if(sPos&&_vtLiveMatches.length){
+    const last=_vtLiveMatches[_vtLiveMatches.length-1];
+    sPos.textContent='('+last.avgX.toFixed(1)+', '+last.avgY.toFixed(1)+')';
+  }
+}
 
 function vtDrawLiveMinimap(){
   // Draw on both the bottom-panel minimap and the inline processing minimap
@@ -4591,7 +5120,7 @@ function vtDrawLiveMinimapOnCanvas(canvas){
   }
 
   // Bounce markers — only show bounces up to the latest processed frame
-  const latestFrame = mLen > 0 ? _vtLiveMatches[mLen-1].frame_index : -1;
+  const latestFrame = mLen > 0 ? _vtLiveMatches[mLen-1].frame_index : Number.POSITIVE_INFINITY;
   let bNum=0;
   _vtLiveBounces.forEach((b)=>{
     if(b.frame > latestFrame) return;  // skip future bounces
@@ -4608,6 +5137,42 @@ function vtDrawLiveMinimapOnCanvas(canvas){
     ctx.font='7px Lato';ctx.fillStyle=color;
     ctx.fillText(b.type,p.x,p.y+17);
   });
+
+  function drawStar(cx,cy,r){
+    ctx.beginPath();
+    for(let i=0;i<10;i++){
+      const a=-Math.PI/2+i*Math.PI/5;
+      const rr=i%2===0?r:r*0.45;
+      const x=cx+Math.cos(a)*rr;
+      const y=cy+Math.sin(a)*rr;
+      if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);
+    }
+    ctx.closePath();
+  }
+
+  let hNum=0;
+  _vtLiveHits.forEach((hit)=>{
+    if(hit.frame > latestFrame) return;
+    hNum++;
+    const p=toC(hit.x,hit.y);
+    drawStar(p.x,p.y,9);
+    ctx.fillStyle='rgba(255,152,0,0.9)';
+    ctx.fill();
+    ctx.strokeStyle='#fff';ctx.lineWidth=1.2;
+    ctx.stroke();
+    ctx.font='bold 8px Lato';ctx.textAlign='center';
+    ctx.fillStyle='#fff';ctx.fillText('H'+hNum,p.x,p.y-12);
+  });
+
+  if(_vtLiveSpeedEvents.length){
+    const latestSpeed=_vtLiveSpeedEvents[_vtLiveSpeedEvents.length-1];
+    const p=toC(latestSpeed.x||0,latestSpeed.y||0);
+    ctx.strokeStyle='#00d5ff';ctx.lineWidth=2;
+    ctx.beginPath();ctx.arc(p.x,p.y,7,0,Math.PI*2);ctx.stroke();
+    ctx.font='bold 10px Lato';ctx.textAlign='left';
+    ctx.fillStyle='#00d5ff';
+    ctx.fillText(Math.round(Number(latestSpeed.speed_kmh||0))+' km/h',p.x+10,p.y+4);
+  }
 }
 
 // ---- Detection Table (3D results) ----
@@ -4663,7 +5228,7 @@ function vtSeekTo3D(index){
     // In playback mode: pause and seek to this detection's time
     vtPlaybackPause();
     const pt=_vt3dPoints[index];
-    if(pt&&pt.t!==undefined) vtRenderPlaybackFrameAtTime(pt.t);
+    if(pt) vtRenderPlaybackFrameAtTime(vtPlaybackPointTime(pt));
   } else {
     // Legacy single-view seek
     const pt=_vt3dPoints[index];
@@ -4691,6 +5256,10 @@ function vtSeekTo3D(index){
 function vtEnterPlayback(){
   _vtPlaybackMode=true;
   _vtPlaybackPlaying=false;
+
+  if(!_vt3dPoints.length&&_vtFullTrajectory3D.length){
+    _vt3dPoints=_vtFullTrajectory3D;
+  }
 
   // Compute time range from clip selection
   const v1=_vtViewRanges[1], v2=_vtViewRanges[2];
@@ -4800,24 +5369,24 @@ function vtFindNearestPointByTime(t){
   let lo=0, hi=_vt3dPoints.length-1;
   while(lo<hi){
     const mid=(lo+hi)>>1;
-    if(_vt3dPoints[mid].t<t) lo=mid+1; else hi=mid;
+    if(vtPlaybackPointTime(_vt3dPoints[mid])<t) lo=mid+1; else hi=mid;
   }
   // Check lo and lo-1 for closest
   let bestIdx=lo;
   if(lo>0){
-    const d0=Math.abs(_vt3dPoints[lo].t-t);
-    const d1=Math.abs(_vt3dPoints[lo-1].t-t);
+    const d0=Math.abs(vtPlaybackPointTime(_vt3dPoints[lo])-t);
+    const d1=Math.abs(vtPlaybackPointTime(_vt3dPoints[lo-1])-t);
     if(d1<d0) bestIdx=lo-1;
   }
   const pt=_vt3dPoints[bestIdx];
-  return {idx:bestIdx, pt:pt, dt:Math.abs(pt.t-t)};
+  return {idx:bestIdx, pt:pt, dt:Math.abs(vtPlaybackPointTime(pt)-t)};
 }
 
 // Find all 3D points up to (and including) time t
 function vtPointsUpToTime(t){
   let count=0;
   for(let i=0;i<_vt3dPoints.length;i++){
-    if(_vt3dPoints[i].t<=t+0.001) count=i+1; else break;
+    if(vtPlaybackPointTime(_vt3dPoints[i])<=t+0.001) count=i+1; else break;
   }
   return count;
 }
@@ -4888,7 +5457,7 @@ function vtRenderPlaybackFrameAtTime(time){
 // Legacy wrapper: render by detection index (used by rally switch etc.)
 function vtRenderPlaybackFrame(idx){
   if(idx>=0&&idx<_vt3dPoints.length){
-    vtRenderPlaybackFrameAtTime(_vt3dPoints[idx].t);
+    vtRenderPlaybackFrameAtTime(vtPlaybackPointTime(_vt3dPoints[idx]));
   }
 }
 
@@ -4975,7 +5544,7 @@ function vtBuildTimelineMarkers(){
     let bestT=_vtPlaybackTimeStart,bestD=Infinity;
     _vt3dPoints.forEach(p=>{
       const d=Math.hypot(p.x-x,p.y-y);
-      if(d<bestD){bestD=d;bestT=p.t}
+      if(d<bestD){bestD=d;bestT=vtPlaybackPointTime(p)}
     });
     return bestT;
   }
@@ -4985,8 +5554,8 @@ function vtBuildTimelineMarkers(){
     const colors=['rgba(79,136,250,.25)','rgba(166,135,252,.25)'];
     _vtRallies.forEach((r,ri)=>{
       if(!r.points||!r.points.length) return;
-      const rStart=r.points[0].t;
-      const rEnd=r.points[r.points.length-1].t;
+      const rStart=vtPlaybackPointTime(r.points[0]);
+      const rEnd=vtPlaybackPointTime(r.points[r.points.length-1]);
       const pctStart=((rStart-_vtPlaybackTimeStart)/duration)*100;
       const pctEnd=((rEnd-_vtPlaybackTimeStart)/duration)*100;
       const band=document.createElement('div');
@@ -5107,19 +5676,13 @@ function vtDrawPlaybackMinimapTime(time){
   // Bounce markers — numbered, only those reached so far
   if(_vtBatchBounces&&_vtBatchBounces.length){
     _vtBatchBounces.forEach((b,bi)=>{
-      // Find nearest point time for this bounce
-      let bestT=Infinity;
-      _vt3dPoints.forEach(p=>{
-        const d=Math.hypot(p.x-b.x,p.y-b.y);
-        if(d<bestT){bestT=p.t}
-      });
       // More accurate: find by position
       let nearestPt=null,bestD=Infinity;
       _vt3dPoints.forEach(p=>{
         const d=Math.hypot(p.x-b.x,p.y-b.y);
         if(d<bestD){bestD=d;nearestPt=p}
       });
-      if(!nearestPt||nearestPt.t>time+0.001) return; // not reached yet
+      if(!nearestPt||vtPlaybackPointTime(nearestPt)>time+0.001) return; // not reached yet
 
       const bx=mx(b.x),by=my(b.y);
       // Numbered circle marker instead of colored diamond
@@ -5137,7 +5700,7 @@ function vtDrawPlaybackMinimapTime(time){
     const lp=_vtTrajectory.landing_point;
     let nearestPt=null,bestD=Infinity;
     _vt3dPoints.forEach(p=>{const d=Math.hypot(p.x-lp.x,p.y-lp.y);if(d<bestD){bestD=d;nearestPt=p}});
-    if(nearestPt&&nearestPt.t<=time+0.001){
+    if(nearestPt&&vtPlaybackPointTime(nearestPt)<=time+0.001){
       const lx=mx(lp.x),ly=my(lp.y);
       const inCourt=lp.x>=-HW&&lp.x<=HW&&lp.y>=-HL&&lp.y<=HL;
       // Target circle
@@ -5201,7 +5764,7 @@ function vtUpdatePerFrameStatsTime(time){
       _vtBatchBounces.forEach(b=>{
         let nearP=null,bestD=Infinity;
         _vt3dPoints.forEach(p=>{const d=Math.hypot(p.x-b.x,p.y-b.y);if(d<bestD){bestD=d;nearP=p}});
-        if(nearP&&nearP.t<=time+0.001) bounceCount++;
+        if(nearP&&vtPlaybackPointTime(nearP)<=time+0.001) bounceCount++;
       });
     }
     if(bounceEl) bounceEl.textContent=bounceCount+(totalBounces>0?(' / '+totalBounces):'');
@@ -5217,7 +5780,7 @@ function vtUpdatePerFrameStatsTime(time){
     const prev=_vt3dPoints[idx-1];
     const dx=pt.x-prev.x,dy=pt.y-prev.y,dz=pt.z-prev.z;
     const dist=Math.sqrt(dx*dx+dy*dy+dz*dz);
-    const dt=(pt.t!==undefined&&prev.t!==undefined)?(pt.t-prev.t):0.04;
+    const dt=vtPlaybackPointTime(pt)-vtPlaybackPointTime(prev);
     if(dt>0) speedKmh=(dist/dt)*3.6;
     if(speedKmh>300){
       if(_vtTrajectory&&_vtTrajectory.net_crossing&&_vtTrajectory.net_crossing.speed_kmh){
@@ -5240,7 +5803,9 @@ function vtUpdatePerFrameStatsTime(time){
   if(_vtRallies&&_vtRallies.length>0){
     for(let ri=0;ri<_vtRallies.length;ri++){
       const r=_vtRallies[ri];
-      if(r.points.length>0&&pt.t>=r.points[0].t-0.01&&pt.t<=r.points[r.points.length-1].t+0.01){
+      if(r.points.length>0
+        &&vtPlaybackPointTime(pt)>=vtPlaybackPointTime(r.points[0])-0.01
+        &&vtPlaybackPointTime(pt)<=vtPlaybackPointTime(r.points[r.points.length-1])+0.01){
         const shotCount=r.trajectory&&r.trajectory.strokes?r.trajectory.strokes.length:'-';
         rallyLabel='Rally '+(ri+1)+' \u00b7 '+shotCount+' shots';
         break;
@@ -5265,7 +5830,7 @@ function vtUpdatePerFrameStatsTime(time){
     _vtBatchBounces.forEach(b=>{
       let nearP=null,bestD=Infinity;
       _vt3dPoints.forEach(p=>{const d=Math.hypot(p.x-b.x,p.y-b.y);if(d<bestD){bestD=d;nearP=p}});
-      if(nearP&&nearP.t<=time+0.001) bounceCount++;
+      if(nearP&&vtPlaybackPointTime(nearP)<=time+0.001) bounceCount++;
     });
   }
 

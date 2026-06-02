@@ -48,6 +48,10 @@ class PipelineStatus(BaseModel):
     fps: float = 0.0
     last_detection_time: Optional[float] = None
     error_msg: Optional[str] = None
+    inference_enabled: bool = True
+    inference_ready: bool = True
+    inference_error: Optional[str] = None
+    detector_stats: Optional[dict] = None
 
 
 class SystemStatus(BaseModel):
@@ -57,4 +61,5 @@ class SystemStatus(BaseModel):
     triangulation_active: bool = False
     latest_ball_3d: Optional[BallPosition3D] = None
     analytics: Optional[dict] = None
+    latest_overlay_detections: Optional[dict] = None
     latest_detections: Optional[dict] = None  # per-camera candidates for minimap

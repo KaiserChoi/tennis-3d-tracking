@@ -16,7 +16,7 @@ and also work in batch mode by feeding points sequentially.
 import logging
 import time
 import warnings
-from collections import deque
+from collections import Counter, deque
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
@@ -1175,6 +1175,600 @@ class HybridBounceDetector:
         # Priority 3: 3D triangulation fallback
         pt = self._buf[i]["pt"]
         return float(pt["x"]), float(pt["y"]), "3d"
+
+
+class SingleCamBounceDetector:
+    """Single-camera net-line window bounce detector.
+
+    The detector is designed for fixed cam68 field tests. It first cuts the
+    2D TrackNet stream into flight windows using the image-space net line, then
+    finds the first physically plausible extremum inside a completed window.
+    Landing coordinates come from the selected frame's homography
+    ``world_x/world_y``.
+    """
+
+    def __init__(
+        self,
+        *,
+        net_line_y: float = 260.0,
+        hysteresis_px: float = 8.0,
+        confirm_frames: int = 4,
+        min_segment_len: int = 8,
+        max_gap_frames: int = 50,
+        max_inactive_frames: int = 50,
+        max_interp_gap_frames: int = 8,
+        max_jump_px_per_frame: float = 900.0,
+        edge_guard_frames: int = 2,
+        cooldown_frames: int = 12,
+        min_prominence_px: float = 4.0,
+        min_direction_slope_px: float = 1.0,
+        max_curve_rmse_px: float = 55.0,
+        max_court_margin_m: float = 1.0,
+        high_freq_range_px: float = 150.0,
+        high_freq_extrema_ratio: float = 0.28,
+        variance_window_frames: int = 20,
+        variance_drop_threshold: float = -10.0,
+        turning_angle_threshold: float = 35.0,
+        kink_accel_threshold: float = 45.0,
+    ):
+        self._net_line_y = float(net_line_y)
+        self._hysteresis_px = float(hysteresis_px)
+        self._confirm_frames = int(confirm_frames)
+        self._min_segment_len = int(min_segment_len)
+        self._max_gap_frames = int(max_gap_frames)
+        self._max_inactive_frames = int(max_inactive_frames)
+        self._max_interp_gap_frames = int(max_interp_gap_frames)
+        self._max_jump_px_per_frame = float(max_jump_px_per_frame)
+        self._edge_guard_frames = int(edge_guard_frames)
+        self._cooldown_frames = cooldown_frames
+        self._min_prominence_px = min_prominence_px
+        self._min_direction_slope_px = float(min_direction_slope_px)
+        self._max_curve_rmse_px = float(max_curve_rmse_px)
+        self._max_court_margin_m = max_court_margin_m
+        self._high_freq_range_px = float(high_freq_range_px)
+        self._high_freq_extrema_ratio = float(high_freq_extrema_ratio)
+        self._variance_window_frames = int(variance_window_frames)
+        self._variance_drop_threshold = float(variance_drop_threshold)
+        self._turning_angle_threshold = float(turning_angle_threshold)
+        self._kink_accel_threshold = float(kink_accel_threshold)
+        self._last_bounce_frame = -100000
+        self._all_bounces: list[BounceEvent] = []
+        self._stats: Counter = Counter()
+        self._last_reject_reason = ""
+        self._windows = {
+            "upper": {"active": False, "points": [], "confirm": 0},
+            "lower": {"active": False, "points": [], "confirm": 0},
+        }
+
+    def update(self, cam_name: str, det: dict) -> Optional[BounceEvent]:
+        """Process one camera detection and return a bounce if confirmed."""
+        if det is None:
+            return None
+        wx = det.get("world_x", det.get("x"))
+        wy = det.get("world_y", det.get("y"))
+        px = det.get("pixel_x")
+        py = det.get("pixel_y")
+        fi = det.get("frame_index")
+        if wx is None or wy is None or px is None or py is None or fi is None:
+            return None
+
+        ts = float(det.get("timestamp") or time.time())
+        capture_ts = float(det.get("capture_ts") or ts)
+        entry = {
+            "frame_index": int(fi),
+            "timestamp": ts,
+            "capture_ts": capture_ts,
+            "world_x": float(wx),
+            "world_y": float(wy),
+            "pixel_x": float(px),
+            "pixel_y": float(py),
+            "confidence": float(det.get("blob_sum", det.get("confidence", 0.0)) or 0.0),
+        }
+
+        self._stats["detections"] += 1
+        closed_windows = self._advance_windows(entry)
+        for side, points in closed_windows:
+            bounce = self._process_window(cam_name, side, points)
+            if bounce is not None:
+                return bounce
+        return None
+
+    def flush(
+        self,
+        cam_name: str,
+        *,
+        frame_index: int,
+        timestamp: Optional[float] = None,
+        capture_ts: Optional[float] = None,
+    ) -> Optional[BounceEvent]:
+        """Close stale windows even when the ball detector has no new point.
+
+        Lower-half bounces are often followed by occlusion or a TrackNet miss.
+        Without a frame heartbeat, those windows can stay active forever and
+        never emit the bounce they already contain.
+        """
+        closed: list[tuple[str, list[dict]]] = []
+        current_frame = int(frame_index)
+        for side_name in ("upper", "lower"):
+            window = self._windows[side_name]
+            if not window["active"] or not window["points"]:
+                continue
+            last_frame = int(window["points"][-1]["frame_index"])
+            if current_frame - last_frame <= self._max_inactive_frames:
+                continue
+            closed.append((side_name, list(window["points"])))
+            self._stats[f"windows_closed_{side_name}_flush"] += 1
+            window.update({"active": False, "points": [], "confirm": 0})
+
+        for side, points in closed:
+            bounce = self._process_window(cam_name, side, points)
+            if bounce is not None:
+                return bounce
+        return None
+
+    def _advance_windows(self, entry: dict) -> list[tuple[str, list[dict]]]:
+        py = float(entry["pixel_y"])
+        frame_index = int(entry["frame_index"])
+        upper_th = self._net_line_y - self._hysteresis_px
+        lower_th = self._net_line_y + self._hysteresis_px
+        closed: list[tuple[str, list[dict]]] = []
+
+        # TrackNet can drop the ball for long stretches. If we append the next
+        # visible point to the old window, the entire physical flight gets
+        # rejected as one giant gap. Close stale windows first, then let the
+        # current detection start the next flight if it is on either side.
+        for side_name in ("upper", "lower"):
+            window = self._windows[side_name]
+            if not window["active"] or not window["points"]:
+                continue
+            last_frame = int(window["points"][-1]["frame_index"])
+            if frame_index - last_frame > self._max_inactive_frames:
+                closed.append((side_name, list(window["points"])))
+                self._stats[f"windows_closed_{side_name}_inactive"] += 1
+                window.update({"active": False, "points": [], "confirm": 0})
+
+        # First append to existing windows and close those that have crossed
+        # the opposite side for several consecutive detections.
+        upper = self._windows["upper"]
+        if upper["active"]:
+            upper["points"].append(entry)
+            if py > lower_th:
+                upper["confirm"] += 1
+            else:
+                upper["confirm"] = 0
+            if upper["confirm"] >= self._confirm_frames:
+                closed.append(("upper", list(upper["points"])))
+                self._stats["windows_closed_upper"] += 1
+                upper.update({"active": False, "points": [], "confirm": 0})
+
+        lower = self._windows["lower"]
+        if lower["active"]:
+            lower["points"].append(entry)
+            if py < upper_th:
+                lower["confirm"] += 1
+            else:
+                lower["confirm"] = 0
+            if lower["confirm"] >= self._confirm_frames:
+                closed.append(("lower", list(lower["points"])))
+                self._stats["windows_closed_lower"] += 1
+                lower.update({"active": False, "points": [], "confirm": 0})
+
+        # Then start new windows from the current detection if it is firmly on
+        # either side of the net line. This lets the next flight begin on the
+        # same frame that closed the previous one.
+        if py < upper_th and not self._windows["upper"]["active"]:
+            self._windows["upper"].update({"active": True, "points": [entry], "confirm": 0})
+            self._stats["windows_started_upper"] += 1
+        if py > lower_th and not self._windows["lower"]["active"]:
+            self._windows["lower"].update({"active": True, "points": [entry], "confirm": 0})
+            self._stats["windows_started_lower"] += 1
+
+        return closed
+
+    def _reject(self, reason: str) -> None:
+        self._last_reject_reason = reason
+        self._stats[f"rejected_{reason}"] += 1
+
+    def _process_window(
+        self,
+        cam_name: str,
+        side: str,
+        points: list[dict],
+    ) -> Optional[BounceEvent]:
+        self._stats["windows_processed"] += 1
+        if len(points) < self._min_segment_len:
+            self._reject("short")
+            return None
+
+        points = sorted(points, key=lambda p: int(p["frame_index"]))
+        if self._has_bad_gap(points):
+            self._reject("gap")
+            return None
+        if self._has_bad_jump(points):
+            self._reject("jump")
+            return None
+
+        for segment in self._split_high_frequency_window(points):
+            bounce = self._process_window_segment(cam_name, side, segment)
+            if bounce is not None:
+                return bounce
+        return None
+
+    def _process_window_segment(
+        self,
+        cam_name: str,
+        side: str,
+        points: list[dict],
+    ) -> Optional[BounceEvent]:
+        if len(points) < self._min_segment_len:
+            self._reject("short")
+            return None
+
+        frames, xs, ys = self._interpolate_xy(points)
+        if len(frames) < self._min_segment_len:
+            self._reject("short")
+            return None
+        ys_smooth = self._smooth_y(ys)
+        candidate_kind = "extremum"
+        if side == "lower":
+            candidate_idx, prominence, direction_strength, rmse = self._find_lower_turning_candidate(
+                frames,
+                xs,
+                ys,
+            )
+            if candidate_idx is not None:
+                candidate_kind = "turning"
+            else:
+                candidate_idx, prominence, direction_strength, rmse = self._find_candidate(
+                    frames,
+                    ys_smooth,
+                    side,
+                )
+        else:
+            candidate_idx, prominence, direction_strength, rmse = self._find_candidate(
+                frames,
+                ys_smooth,
+                side,
+            )
+        if candidate_idx is None:
+            if side != "lower":
+                return None
+            return None
+
+        if candidate_kind == "extremum":
+            raw_idx = self._refine_candidate_idx(ys, candidate_idx, "max" if side == "upper" else "min")
+            candidate_idx = raw_idx
+        if candidate_idx < self._edge_guard_frames or candidate_idx >= len(frames) - self._edge_guard_frames:
+            self._reject("edge")
+            return None
+
+        frame_index = int(frames[candidate_idx])
+        if frame_index - self._last_bounce_frame < self._cooldown_frames:
+            self._reject("cooldown")
+            return None
+
+        source_pt = self._nearest_point(points, frame_index)
+        wx_i = float(source_pt["world_x"])
+        wy_i = float(source_pt["world_y"])
+        if wx_i < SINGLES_X_MIN - self._max_court_margin_m or wx_i > SINGLES_X_MAX + self._max_court_margin_m:
+            self._reject("court")
+            return None
+        if wy_i < COURT_Y_MIN - self._max_court_margin_m or wy_i > COURT_Y_MAX + self._max_court_margin_m:
+            self._reject("court")
+            return None
+
+        confidence = min(
+            1.0,
+            0.30
+            + min(0.35, prominence / 45.0)
+            + min(0.20, direction_strength / 12.0)
+            + max(0.0, 0.15 - rmse / 250.0),
+        )
+        bounce = BounceEvent(
+            x=wx_i,
+            y=wy_i,
+            z=0.0,
+            timestamp=float(source_pt["timestamp"]),
+            capture_ts=float(source_pt["capture_ts"]),
+            in_court=_is_in_court(wx_i, wy_i),
+            frame_index=frame_index,
+            confidence=round(confidence, 3),
+            source_camera=cam_name,
+            cam_pixels={cam_name: [source_pt["pixel_x"], source_pt["pixel_y"]]},
+        )
+        self._last_bounce_frame = frame_index
+        self._all_bounces.append(bounce)
+        self._stats["accepted"] += 1
+        self._stats[f"accepted_{candidate_kind}"] += 1
+        logger.info(
+            "SingleCamBounce[%s/%s]: frame=%d cam=%s pos=(%.2f, %.2f) prom=%.1f dir=%.1f rmse=%.1f %s",
+            side, candidate_kind, frame_index, cam_name, wx_i, wy_i, prominence, direction_strength, rmse,
+            "IN" if bounce.in_court else "OUT",
+        )
+        return bounce
+
+    def _has_bad_gap(self, points: list[dict]) -> bool:
+        for a, b in zip(points, points[1:]):
+            if int(b["frame_index"]) - int(a["frame_index"]) > self._max_gap_frames:
+                return True
+        return False
+
+    def _has_bad_jump(self, points: list[dict]) -> bool:
+        for a, b in zip(points, points[1:]):
+            gap = max(1, int(b["frame_index"]) - int(a["frame_index"]))
+            dx = float(b["pixel_x"]) - float(a["pixel_x"])
+            dy = float(b["pixel_y"]) - float(a["pixel_y"])
+            if (dx * dx + dy * dy) ** 0.5 > self._max_jump_px_per_frame * gap:
+                return True
+        return False
+
+    def _split_high_frequency_window(self, points: list[dict]) -> list[list[dict]]:
+        """Old traj2-inspired secondary split for noisy mixed windows.
+
+        If a closed window contains a large oscillation plus many small extrema,
+        it often means two motions were glued together by TrackNet noise. Split
+        once at the strongest variance drop, but keep the original window when
+        the split would be too small or weak.
+        """
+        if len(points) < max(self._min_segment_len * 2, self._variance_window_frames + 2):
+            return [points]
+        ys = np.array([float(p["pixel_y"]) for p in points], dtype=float)
+        frame_numbers = np.array([int(p["frame_index"]) for p in points], dtype=int)
+        amplitude = float(np.max(ys) - np.min(ys))
+        if amplitude < self._high_freq_range_px:
+            return [points]
+
+        peaks = 0
+        for i in range(1, len(ys) - 1):
+            if ys[i] > ys[i - 1] and ys[i] >= ys[i + 1]:
+                peaks += 1
+            elif ys[i] < ys[i - 1] and ys[i] <= ys[i + 1]:
+                peaks += 1
+        std = float(np.std(ys))
+        ratio = peaks / max(std, 1e-6)
+        if ratio <= self._high_freq_extrema_ratio:
+            return [points]
+
+        win = min(self._variance_window_frames, len(ys))
+        if win < 4:
+            return [points]
+        variances = np.array([np.var(ys[i:i + win]) for i in range(len(ys) - win + 1)], dtype=float)
+        if len(variances) < 2:
+            return [points]
+        diffs = np.diff(variances)
+        split_i = int(np.argmin(diffs)) + win // 2
+        steepest_drop = float(diffs[int(np.argmin(diffs))])
+        if steepest_drop > self._variance_drop_threshold:
+            return [points]
+        if split_i < self._min_segment_len or len(points) - split_i < self._min_segment_len:
+            return [points]
+
+        self._stats["windows_split_high_freq"] += 1
+        self._stats["windows_split_high_freq_frame"] = int(frame_numbers[split_i])
+        return [points[:split_i], points[split_i:]]
+
+    def _interpolate_y(self, points: list[dict]) -> tuple[np.ndarray, np.ndarray]:
+        frames = np.array([int(p["frame_index"]) for p in points], dtype=int)
+        ys = np.array([float(p["pixel_y"]) for p in points], dtype=float)
+        if len(frames) < 2:
+            return frames, ys
+        full_frames = np.arange(int(frames[0]), int(frames[-1]) + 1, dtype=int)
+        full_ys = np.interp(full_frames, frames, ys)
+        return full_frames, full_ys
+
+    def _interpolate_xy(self, points: list[dict]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        frames = np.array([int(p["frame_index"]) for p in points], dtype=int)
+        xs = np.array([float(p["pixel_x"]) for p in points], dtype=float)
+        ys = np.array([float(p["pixel_y"]) for p in points], dtype=float)
+        if len(frames) < 2:
+            return frames, xs, ys
+        full_frames = np.arange(int(frames[0]), int(frames[-1]) + 1, dtype=int)
+        full_xs = np.interp(full_frames, frames, xs)
+        full_ys = np.interp(full_frames, frames, ys)
+        return full_frames, full_xs, full_ys
+
+    def _smooth_y(self, ys: np.ndarray) -> np.ndarray:
+        if len(ys) < 5:
+            return ys
+        win = min(7, len(ys) if len(ys) % 2 == 1 else len(ys) - 1)
+        if win < 5:
+            return ys
+        try:
+            from scipy.signal import savgol_filter
+
+            return np.asarray(savgol_filter(ys, win, 2), dtype=float)
+        except Exception:
+            return ys
+
+    def _find_candidate(
+        self,
+        frames: np.ndarray,
+        ys: np.ndarray,
+        side: str,
+    ) -> tuple[Optional[int], float, float, float]:
+        mode = "max" if side == "upper" else "min"
+        extrema = []
+        for i in range(self._edge_guard_frames, len(ys) - self._edge_guard_frames):
+            if mode == "max":
+                if ys[i] >= ys[i - 1] and ys[i] > ys[i + 1]:
+                    extrema.append(i)
+            else:
+                if ys[i] <= ys[i - 1] and ys[i] < ys[i + 1]:
+                    extrema.append(i)
+        if not extrema:
+            self._reject("no_extremum")
+            return None, 0.0, 0.0, 0.0
+
+        saw_prominence = False
+        saw_direction = False
+        saw_residual = False
+        for i in extrema:
+            before = ys[:i]
+            after = ys[i + 1:]
+            if len(before) < 2 or len(after) < 2:
+                continue
+            if mode == "max":
+                prominence = min(float(ys[i] - np.mean(before)), float(ys[i] - np.mean(after)))
+            else:
+                prominence = min(float(np.mean(before) - ys[i]), float(np.mean(after) - ys[i]))
+            if prominence < self._min_prominence_px:
+                saw_prominence = True
+                continue
+
+            direction_strength = self._direction_strength(ys, i, mode)
+            if direction_strength < self._min_direction_slope_px:
+                saw_direction = True
+                continue
+
+            rmse = self._local_curve_rmse(frames, ys, i)
+            if rmse > self._max_curve_rmse_px:
+                saw_residual = True
+                continue
+            return i, prominence, direction_strength, rmse
+
+        # Classify the common failure cause for stats.
+        if saw_residual:
+            self._reject("residual")
+        elif saw_direction:
+            self._reject("direction")
+        elif saw_prominence:
+            self._reject("prominence")
+        else:
+            self._reject("edge")
+        return None, 0.0, 0.0, 0.0
+
+    def _find_lower_turning_candidate(
+        self,
+        frames: np.ndarray,
+        xs: np.ndarray,
+        ys: np.ndarray,
+    ) -> tuple[Optional[int], float, float, float]:
+        if len(frames) < self._min_segment_len:
+            return None, 0.0, 0.0, 0.0
+
+        min_y = self._net_line_y + 60.0
+        max_y = 980.0
+        best: Optional[tuple[int, float, float, float]] = None
+        for i in range(max(1, self._edge_guard_frames), len(frames) - self._edge_guard_frames - 1):
+            if ys[i] < min_y or ys[i] > max_y:
+                continue
+            v_prev = np.array([xs[i] - xs[i - 1], ys[i] - ys[i - 1]], dtype=float)
+            v_next = np.array([xs[i + 1] - xs[i], ys[i + 1] - ys[i]], dtype=float)
+            speed_prev = float(np.linalg.norm(v_prev))
+            speed_next = float(np.linalg.norm(v_next))
+            if speed_prev < 8.0 or speed_next < 12.0:
+                continue
+            accel = float(np.linalg.norm(v_next - v_prev))
+            angle = self._angle_between(v_prev, v_next)
+            if accel < self._kink_accel_threshold and angle < self._turning_angle_threshold:
+                continue
+            # In cam68 lower-half approaches, the visible landing often shows
+            # up as the first abrupt speed-up in the same-side image track,
+            # not as a y-extremum. This follows the old trajectory.py idea of
+            # using velocity-vector turns, with acceleration as the robust
+            # realtime trigger for low-angle bounces.
+            cand = i + 1 if speed_next > speed_prev * 1.35 else i
+            cand = min(max(cand, self._edge_guard_frames), len(frames) - self._edge_guard_frames - 1)
+            score = accel + angle + max(0.0, speed_next - speed_prev)
+            best = (cand, score, accel, speed_next)
+            break
+        if best is None:
+            return None, 0.0, 0.0, 0.0
+        cand, score, accel, speed_next = best
+        return cand, min(80.0, accel), min(40.0, score / 4.0), max(0.0, 80.0 - speed_next / 2.0)
+
+    @staticmethod
+    def _angle_between(v1: np.ndarray, v2: np.ndarray) -> float:
+        denom = float(np.linalg.norm(v1) * np.linalg.norm(v2))
+        if denom <= 1e-6:
+            return 0.0
+        cosang = float(np.clip(np.dot(v1, v2) / denom, -1.0, 1.0))
+        return float(np.degrees(np.arccos(cosang)))
+
+    def _direction_strength(self, ys: np.ndarray, i: int, mode: str) -> float:
+        left_start = max(0, i - 4)
+        right_end = min(len(ys), i + 5)
+        left = ys[left_start:i + 1]
+        right = ys[i:right_end]
+        if len(left) < 3 or len(right) < 3:
+            return 0.0
+        left_slope = float(np.polyfit(np.arange(len(left)), left, 1)[0])
+        right_slope = float(np.polyfit(np.arange(len(right)), right, 1)[0])
+        if mode == "max":
+            return min(left_slope, -right_slope)
+        return min(-left_slope, right_slope)
+
+    def _local_curve_rmse(self, frames: np.ndarray, ys: np.ndarray, i: int) -> float:
+        lo = max(0, i - 4)
+        hi = min(len(ys), i + 5)
+        if hi - lo < 5:
+            return 0.0
+        x = frames[lo:hi].astype(float)
+        y = ys[lo:hi].astype(float)
+        x = x - float(np.mean(x))
+        span = float(np.ptp(x))
+        if span <= 1e-6:
+            return 0.0
+        x = x / span
+        try:
+            c = np.polyfit(x, y, 2)
+            residual = y - np.polyval(c, x)
+            return float(np.sqrt(np.mean(residual ** 2)))
+        except Exception:
+            return self._max_curve_rmse_px + 1.0
+
+    @staticmethod
+    def _refine_candidate_idx(ys: np.ndarray, i: int, mode: str, radius: int = 2) -> int:
+        lo = max(0, i - radius)
+        hi = min(len(ys), i + radius + 1)
+        if hi <= lo:
+            return i
+        local = ys[lo:hi]
+        offset = int(np.argmax(local) if mode == "max" else np.argmin(local))
+        return lo + offset
+
+    @staticmethod
+    def _refine_kink_candidate_idx(xs: np.ndarray, ys: np.ndarray, i: int, radius: int = 1) -> int:
+        lo = max(1, i - radius)
+        hi = min(len(ys) - 1, i + radius + 1)
+        if hi <= lo:
+            return i
+        best_i = i
+        best_acc = -1.0
+        for j in range(lo, hi):
+            v_prev = np.array([xs[j] - xs[j - 1], ys[j] - ys[j - 1]], dtype=float)
+            v_next = np.array([xs[j + 1] - xs[j], ys[j + 1] - ys[j]], dtype=float)
+            acc = float(np.linalg.norm(v_next - v_prev))
+            if acc > best_acc:
+                best_acc = acc
+                best_i = j
+        return best_i
+
+    @staticmethod
+    def _nearest_point(points: list[dict], frame_index: int) -> dict:
+        return min(points, key=lambda p: abs(int(p["frame_index"]) - int(frame_index)))
+
+    def get_all_bounces(self) -> list[BounceEvent]:
+        return list(self._all_bounces)
+
+    def get_stats(self) -> dict:
+        d = dict(self._stats)
+        d["active_upper"] = bool(self._windows["upper"]["active"])
+        d["active_lower"] = bool(self._windows["lower"]["active"])
+        d["upper_points"] = len(self._windows["upper"]["points"])
+        d["lower_points"] = len(self._windows["lower"]["points"])
+        d["last_reject_reason"] = self._last_reject_reason
+        d["net_line_y"] = self._net_line_y
+        d["hysteresis_px"] = self._hysteresis_px
+        return d
+
+    def reset(self) -> None:
+        for w in self._windows.values():
+            w.update({"active": False, "points": [], "confirm": 0})
+        self._last_bounce_frame = -100000
+        self._all_bounces.clear()
+        self._stats.clear()
+        self._last_reject_reason = ""
 
 
 # ---------------------------------------------------------------------------
