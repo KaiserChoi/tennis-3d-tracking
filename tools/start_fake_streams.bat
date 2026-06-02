@@ -9,7 +9,7 @@ timeout /t 2 /nobreak >nul
 :: Start both ffmpeg streams simultaneously
 echo Starting cam66 and cam68 streams...
 start "cam66" /MIN cmd /c "ffmpeg -re -stream_loop -1 -i %~dp0\..\uploads\cam66_20260307_173403_2min.mp4 -c:v libx264 -preset ultrafast -tune zerolatency -r 25 -f rtsp rtsp://localhost:8554/cam66 2>nul"
-start "cam68" /MIN cmd /c "ffmpeg -re -stream_loop -1 -i %~dp0\..\uploads\cam68_20260307_173403_2min.mp4 -c:v libx264 -preset ultrafast -tune zerolatency -r 25 -f rtsp rtsp://localhost:8554/cam68 2>nul"
+start "cam68" /MIN cmd /c "ffmpeg -re -stream_loop -1 -i D:\tennis-dataset\1001\FV9942588_1_cloudrecord_20260525102315_20260525110000_segments\part_016_20260525103915_20260525104015.mp4 -c:v libx264 -preset ultrafast -tune zerolatency -r 25 -f rtsp rtsp://localhost:8554/cam68 2>nul"
 
 echo.
 echo Streams running:
