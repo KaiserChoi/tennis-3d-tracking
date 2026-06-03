@@ -33,7 +33,7 @@ class Config:
     MINIMAP_RATIO = 0.3      
     MINIMAP_MARGIN = 6.0     
     DRAW_MAIN_COURT_LINES = False
-    MINIMAP_FLIP = "rotate180"
+    MINIMAP_FLIP = "flip_x"
 
     # ---------------------------------------------------------
     # 4. 追踪与死球黑洞控制
@@ -315,7 +315,11 @@ class CourtCalibrator:
         self.static_minimap = minimap
 
     def _to_map(self, rx, ry):
-        if Config.MINIMAP_FLIP == "rotate180":
+        if Config.MINIMAP_FLIP == "flip_x":
+            rx = -rx
+        elif Config.MINIMAP_FLIP == "flip_y":
+            ry = -ry
+        elif Config.MINIMAP_FLIP == "rotate180":
             rx, ry = -rx, -ry
         mx = int(self.mm_w / 2 + rx * self.mm_scale)
         my = int(self.mm_h / 2 + ry * self.mm_scale) 
