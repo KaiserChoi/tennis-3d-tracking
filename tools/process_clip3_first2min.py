@@ -485,6 +485,7 @@ def _make_court(panel_w: int, panel_h: int):
     cv2.line(img, w2p(cw.x_min, cw.service_line_near), w2p(cw.x_max, cw.service_line_near), (190, 205, 198), 1, cv2.LINE_AA)
     cv2.line(img, w2p(cw.x_min, cw.service_line_far), w2p(cw.x_max, cw.service_line_far), (190, 205, 198), 1, cv2.LINE_AA)
     cv2.line(img, w2p(0, cw.service_line_near), w2p(0, cw.service_line_far), (190, 205, 198), 1, cv2.LINE_AA)
+    cv2.putText(img, "MINIMAP", (18, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (210, 230, 218), 1, cv2.LINE_AA)
     return img, w2p
 
 
@@ -601,26 +602,35 @@ def render_pretty_video(
             cv2.putText(panel, label, (12, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (245, 245, 245), 2, cv2.LINE_AA)
 
         court = court_base.copy()
+        # Fading 3D trajectory on minimap.
+        map_frames = [f for f in sorted(smoothed_3d) if fi - 90 <= f <= fi]
+        for idx in range(1, len(map_frames)):
+            f0, f1 = map_frames[idx - 1], map_frames[idx]
+            x0, y0, _z0 = smoothed_3d[f0]
+            x1, y1, _z1 = smoothed_3d[f1]
+            alpha = idx / max(len(map_frames) - 1, 1)
+            color = (int(45 * alpha), int(210 * alpha), int(255 * alpha))
+            cv2.line(court, w2p(x0, y0), w2p(x1, y1), color, max(1, int(1 + 2 * alpha)), cv2.LINE_AA)
+
+        if fi in smoothed_3d:
+            x, y, z = smoothed_3d[fi]
+            p = w2p(x, y)
+            cv2.circle(court, p, 5, (0, 255, 255), -1, cv2.LINE_AA)
+            cv2.putText(court, f"z {z:.1f}m", (18, canvas_h - 18), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (215, 230, 230), 1, cv2.LINE_AA)
+
         if fi in bounce_by_frame:
             shown_bounces.append(bounce_by_frame[fi])
-        visible_bounces = shown_bounces[-24:]
-        for i, b in enumerate(visible_bounces):
+        for i, b in enumerate(shown_bounces[-8:]):
             bx = float(b.get("x_homo", b.get("x", 0.0)))
             by = float(b.get("y_homo", b.get("y", 0.0)))
             p = w2p(bx, by)
-            in_court = bool(b.get("in_court", True))
-            is_latest = i == len(visible_bounces) - 1
-            color = (50, 255, 110) if in_court else (45, 65, 245)
-            radius = 7 if is_latest else 5
-            if in_court:
-                cv2.circle(court, p, radius, color, -1, cv2.LINE_AA)
-                cv2.circle(court, p, radius + 1, (235, 255, 235), 1, cv2.LINE_AA)
-            else:
-                cv2.circle(court, p, radius, color, 2, cv2.LINE_AA)
-            if is_latest:
-                age = max(0, fi - _bounce_frame(b))
-                pulse = max(0, 18 - age)
-                cv2.circle(court, p, radius + 6 + pulse, color, 1, cv2.LINE_AA)
+            age = max(0, fi - _bounce_frame(b))
+            pulse = max(0, 18 - age)
+            color = (50, 255, 110) if b.get("in_court", True) else (70, 70, 255)
+            cv2.circle(court, p, 7, color, -1 if b.get("in_court", True) else 2, cv2.LINE_AA)
+            if pulse > 0:
+                cv2.circle(court, p, 9 + pulse, color, 1, cv2.LINE_AA)
+            cv2.putText(court, str(max(1, len(shown_bounces) - len(shown_bounces[-8:]) + i + 1)), (p[0] + 9, p[1] + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (245, 245, 245), 1, cv2.LINE_AA)
 
         speed = _nearest_speed(fi, net_crossings)
         if speed:
