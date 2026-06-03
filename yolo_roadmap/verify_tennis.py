@@ -550,7 +550,14 @@ class TrajectoryAnalyzer:
                     
                     if frame_diff > 0:
                         speed_px = pixel_dist / frame_diff
-                        crossings.append({'frame': p_curr[0], 'direction': direction, 'speed_px': speed_px})
+                        crossings.append({
+                            'frame': p_curr[0],
+                            'direction': direction,
+                            'speed_px': speed_px,
+                            'px': p_net_cross[1][0],
+                            'py': p_net_cross[1][1],
+                            'speed_ref_frame': p_spd_cross[0],
+                        })
         return crossings
 
 
@@ -752,6 +759,7 @@ def overlay_tracking_queue_based(video_path, model_ball_path):
     global_hits = {}              
     global_raw_bounces = {}
     global_crossings = {'bottom_up': 0.0, 'top_down': 0.0}
+    global_crossing_events = {}
     processed_crossing_frames = set() 
     processed_bottom_hit_frames = set()
 
@@ -916,7 +924,19 @@ def overlay_tracking_queue_based(video_path, model_ball_path):
                     new_crossings.append(c)
                     
                     coef = Config.SPEED_COEF_UP if direction == 'bottom_up' else Config.SPEED_COEF_DOWN
-                    global_crossings[direction] = speed_px * coef
+                    speed_kmh = speed_px * coef
+                    global_crossings[direction] = speed_kmh
+                    c['speed_kmh'] = speed_kmh
+                    global_crossing_events[c_frame] = {
+                        'frame': c_frame,
+                        'direction': direction,
+                        'speed_px': speed_px,
+                        'speed_kmh': speed_kmh,
+                        'px': c.get('px'),
+                        'py': c.get('py'),
+                        'speed_ref_frame': c.get('speed_ref_frame'),
+                    }
+                    print(f"[NET CROSSING] F:{c_frame} | {direction} | speed:{speed_kmh:.1f} km/h")
                     
                     if direction == 'top_down':
                         best_hit_frame = None
@@ -1041,6 +1061,25 @@ def overlay_tracking_queue_based(video_path, model_ball_path):
                 cv2.circle(frame, (int(det[0]), int(det[1])), radius=6, color=(0, 255, 0), thickness=-1)
                 cv2.rectangle(frame, (int(det[2]), int(det[3])), (int(det[4]), int(det[5])), Config.C_MOV_BOX, 2)
 
+            for existing_frame, c_data in global_crossing_events.items():
+                if 0 <= frame_idx - existing_frame <= Config.VIS_RESIDUAL_FRAMES:
+                    sx = c_data.get('px')
+                    sy = c_data.get('py')
+                    if sx is None or sy is None:
+                        sx, sy = 40, 80
+                    sx, sy = int(sx), int(sy)
+                    speed = c_data.get('speed_kmh', 0.0)
+                    direction_label = "UP" if c_data.get('direction') == 'bottom_up' else "DOWN"
+                    speed_text = f"NET {direction_label}: {speed:.1f} km/h"
+                    cv2.circle(frame, (sx, sy), 18, Config.C_SPEED_LINE, 2)
+                    cv2.line(frame, (max(0, sx - 18), sy), (min(frame.shape[1] - 1, sx + 18), sy), Config.C_SPEED_LINE, 2)
+                    cv2.line(frame, (sx, max(0, sy - 18)), (sx, min(frame.shape[0] - 1, sy + 18)), Config.C_SPEED_LINE, 2)
+                    (text_w, text_h), baseline = cv2.getTextSize(speed_text, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
+                    text_x = int(min(max(sx + 22, 5), max(5, frame.shape[1] - text_w - 10)))
+                    text_y = int(min(max(sy - 22, text_h + 10), frame.shape[0] - 10))
+                    cv2.rectangle(frame, (text_x - 5, text_y - text_h - 5), (text_x + text_w + 5, text_y + baseline + 5), (20, 20, 20), -1)
+                    cv2.putText(frame, speed_text, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.7, Config.C_SPEED_LINE, 2)
+
             for existing_frame, b_data in global_bounces.items():
                 if 0 <= frame_idx - existing_frame <= Config.VIS_RESIDUAL_FRAMES: 
                     bp_x, bp_y = b_data['px'], b_data['py']
@@ -1081,6 +1120,8 @@ def overlay_tracking_queue_based(video_path, model_ball_path):
             global_bounces.clear()
             global_hits.clear()
             global_raw_bounces.clear()
+            global_crossings.update({'bottom_up': 0.0, 'top_down': 0.0})
+            global_crossing_events.clear()
             processed_bottom_hit_frames.clear()
 
     # ⚡ 释放录制资源
