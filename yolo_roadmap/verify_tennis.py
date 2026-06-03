@@ -750,8 +750,104 @@ def overlay_tracking_queue_based(video_path, model_ball_path):
     global_player_history = {}    
     global_bounces = {}
     global_hits = {}              
+    global_raw_bounces = {}
     global_crossings = {'bottom_up': 0.0, 'top_down': 0.0}
     processed_crossing_frames = set() 
+    processed_bottom_hit_frames = set()
+
+    def _bottom_hit_distance_threshold(player):
+        ry_ratio = min(max(player['ry'], 0.0), 11.885) / 11.885
+        return Config.HIT_DIST_PX_NET + (Config.HIT_DIST_PX_BASE - Config.HIT_DIST_PX_NET) * ry_ratio
+
+    def _store_hit(frame, hit_data):
+        keys_to_delete = []
+        for existing_frame, data in global_hits.items():
+            if abs(frame - existing_frame) <= Config.CLEAN_TIME_FRAMES:
+                if math.hypot(hit_data['rx'] - data['rx'], hit_data['ry'] - data['ry']) <= Config.CLEAN_SPACE_METERS:
+                    keys_to_delete.append(existing_frame)
+        for key in keys_to_delete:
+            del global_hits[key]
+        global_hits[frame] = hit_data
+
+    def _hit_from_ball_and_player(frame, source, ball_px, ball_py, player, distance_px, threshold_px=None, angle=None, crossing_frame=None):
+        ball_real = calibrator.pixel_to_real(ball_px, ball_py)
+        if ball_real:
+            ball_rx, ball_ry = ball_real
+        else:
+            ball_rx, ball_ry = player['rx'], player['ry']
+        hit_data = {
+            'px': ball_px,
+            'py': ball_py,
+            'rx': ball_rx,
+            'ry': player['ry'],
+            'source': source,
+            'ball_rx': ball_rx,
+            'ball_ry': ball_ry,
+            'player_rx': player['rx'],
+            'player_ry': player['ry'],
+            'distance_px': distance_px,
+            'threshold_px': threshold_px,
+            'angle': angle,
+            'crossing_frame': crossing_frame,
+        }
+        _store_hit(frame, hit_data)
+
+    def _find_lookback_hit(crossing_frame, half):
+        best_hit_frame = None
+        min_dist = float('inf')
+        best_hit_data = None
+        search_end = max(0, crossing_frame - Config.TOP_HIT_LOOKBACK_FRAMES)
+        for f_back in range(crossing_frame, search_end - 1, -1):
+            if f_back in global_ball_history and f_back in global_player_history:
+                bx, by = global_ball_history[f_back]
+                for p in global_player_history[f_back]:
+                    if abs(p['rx']) > 4.115 + Config.ROI_SIDE_MARGIN:
+                        continue
+                    if half == 'top' and p['ry'] >= 0:
+                        continue
+                    if half == 'bottom' and p['ry'] <= 0:
+                        continue
+                    dist = math.hypot(bx - p['cx'], by - p['cy'])
+                    if dist < min_dist:
+                        threshold = Config.HIT_DIST_PX_TOP_MAX if half == 'top' else _bottom_hit_distance_threshold(p)
+                        min_dist = dist
+                        best_hit_frame = f_back
+                        best_hit_data = {
+                            'px': bx,
+                            'py': by,
+                            'player': p,
+                            'distance_px': dist,
+                            'threshold_px': threshold,
+                        }
+        return best_hit_frame, min_dist, best_hit_data
+
+    def _has_bottom_hit_before(crossing_frame):
+        start = crossing_frame - Config.TOP_HIT_LOOKBACK_FRAMES
+        for hit_frame, data in global_hits.items():
+            if start <= hit_frame <= crossing_frame and str(data.get('source', '')).startswith('bottom'):
+                return True
+        return False
+
+    def _rebuild_final_bounces_after_hits():
+        final_bounces = {}
+        for b_frame in sorted(global_raw_bounces):
+            raw = global_raw_bounces[b_frame]
+            suppress = False
+            for hit_frame in global_hits:
+                if abs(b_frame - hit_frame) <= 3:
+                    suppress = True
+                    break
+            if suppress:
+                continue
+            keys_to_delete = []
+            for existing_frame, data in final_bounces.items():
+                if abs(b_frame - existing_frame) <= Config.CLEAN_TIME_FRAMES:
+                    if math.hypot(raw['rx'] - data['rx'], raw['ry'] - data['ry']) <= Config.CLEAN_SPACE_METERS:
+                        keys_to_delete.append(existing_frame)
+            for key in keys_to_delete:
+                del final_bounces[key]
+            final_bounces[b_frame] = raw
+        return final_bounces
 
     while True:
         if not paused:
@@ -810,12 +906,14 @@ def overlay_tracking_queue_based(video_path, model_ball_path):
             # ----------------------------------------
             # 截击网跨越事件与上区回溯算法
             # ----------------------------------------
+            new_crossings = []
             for c in frame_crossings:
                 c_frame = c['frame']
                 if c_frame not in processed_crossing_frames:
                     processed_crossing_frames.add(c_frame)
                     direction = c['direction']
                     speed_px = c['speed_px']
+                    new_crossings.append(c)
                     
                     coef = Config.SPEED_COEF_UP if direction == 'bottom_up' else Config.SPEED_COEF_DOWN
                     global_crossings[direction] = speed_px * coef
@@ -837,24 +935,30 @@ def overlay_tracking_queue_based(video_path, model_ball_path):
                                         if dist < min_dist:
                                             min_dist = dist
                                             best_hit_frame = f_back
-                                            best_hit_data = {'px': bx, 'py': by, 'rx': p['rx'], 'ry': p['ry']}
+                                            best_hit_data = {'px': bx, 'py': by, 'player': p, 'distance_px': dist, 'threshold_px': Config.HIT_DIST_PX_TOP_MAX}
                         
                         if best_hit_frame and min_dist <= Config.HIT_DIST_PX_TOP_MAX:
-                            global_hits[best_hit_frame] = best_hit_data
+                            _hit_from_ball_and_player(best_hit_frame, 'top_down_lookback', best_hit_data['px'], best_hit_data['py'], best_hit_data['player'], min_dist, threshold_px=Config.HIT_DIST_PX_TOP_MAX, crossing_frame=c_frame)
                             print(f"[TOP HIT DETECTED] 拓扑回溯成功! F:{best_hit_frame} | 距离: {min_dist:.1f}px")
 
             # ----------------------------------------
             # 下区击球 (Hit) 与弹跳 (Bounce) 分离逻辑
             # ----------------------------------------
             for b_frame, bx, by, angle in frame_bounces:
-                if b_frame in global_bounces or b_frame in global_hits: continue 
-                
                 real_coords = calibrator.pixel_to_real(bx, by)
                 if not real_coords: continue
                 rx, ry = real_coords
+                if b_frame not in global_raw_bounces:
+                    is_in = abs(rx) <= 4.115 and abs(ry) <= 11.885
+                    global_raw_bounces[b_frame] = {'px': bx, 'py': by, 'rx': rx, 'ry': ry, 'is_in': is_in, 'angle': angle}
+                if b_frame in processed_bottom_hit_frames or b_frame in global_hits:
+                    continue
+                processed_bottom_hit_frames.add(b_frame)
                 
                 is_hit = False
                 matched_player = None
+                matched_dist = None
+                matched_thr = None
                 
                 if ry > 0: 
                     if angle >= Config.HIT_ANGLE_THR:
@@ -863,14 +967,15 @@ def overlay_tracking_queue_based(video_path, model_ball_path):
                             if is_hit: break
                             if sf in global_player_history:
                                 for p in global_player_history[sf]:
-                                    if abs(p['rx']) <= 4.115 + Config.ROI_SIDE_MARGIN and p['ry'] >= -Config.ROI_NET_MARGIN:
-                                        ry_ratio = min(max(p['ry'], 0.0), 11.885) / 11.885
-                                        dynamic_dist_thr = Config.HIT_DIST_PX_NET + (Config.HIT_DIST_PX_BASE - Config.HIT_DIST_PX_NET) * ry_ratio
+                                    if abs(p['rx']) <= 4.115 + Config.ROI_SIDE_MARGIN and p['ry'] > 0:
+                                        dynamic_dist_thr = _bottom_hit_distance_threshold(p)
                                         
                                         dist = math.hypot(bx - p['cx'], by - p['cy'])
                                         if dist <= dynamic_dist_thr:
                                             is_hit = True
                                             matched_player = p
+                                            matched_dist = dist
+                                            matched_thr = dynamic_dist_thr
                                             print(f"[BOTTOM HIT DETECTED] F:{b_frame} | 角度: {angle:.1f}° | 距离: {dist:.1f}px (阈值:{dynamic_dist_thr:.1f}px)")
                                             break
                 
@@ -885,7 +990,7 @@ def overlay_tracking_queue_based(video_path, model_ball_path):
                                 keys_to_delete.append(existing_frame)
                     for k in keys_to_delete: del global_hits[k]
                     
-                    global_hits[b_frame] = {'px': bx, 'py': by, 'rx': hit_rx, 'ry': hit_ry}
+                    _hit_from_ball_and_player(b_frame, 'bottom_reversal_player_anchor', bx, by, matched_player, matched_dist if matched_dist is not None else 0.0, threshold_px=matched_thr, angle=angle)
                 else:
                     keys_to_delete = []
                     for existing_frame, data in global_bounces.items():
@@ -896,6 +1001,28 @@ def overlay_tracking_queue_based(video_path, model_ball_path):
                     
                     is_in = abs(rx) <= 4.115 and abs(ry) <= 11.885 
                     global_bounces[b_frame] = {'px': bx, 'py': by, 'rx': rx, 'ry': ry, 'is_in': is_in}
+
+            for c in new_crossings:
+                if c['direction'] != 'bottom_up':
+                    continue
+                c_frame = c['frame']
+                if _has_bottom_hit_before(c_frame):
+                    continue
+                best_hit_frame, min_dist, best_hit_data = _find_lookback_hit(c_frame, 'bottom')
+                if best_hit_frame is not None and best_hit_data is not None and min_dist <= best_hit_data['threshold_px']:
+                    _hit_from_ball_and_player(
+                        best_hit_frame,
+                        'bottom_up_lookback',
+                        best_hit_data['px'],
+                        best_hit_data['py'],
+                        best_hit_data['player'],
+                        min_dist,
+                        threshold_px=best_hit_data['threshold_px'],
+                        crossing_frame=c_frame,
+                    )
+                    print(f"[BOTTOM LOOKBACK HIT DETECTED] F:{best_hit_frame} | cross:{c_frame} | dist:{min_dist:.1f}px")
+
+            global_bounces = _rebuild_final_bounces_after_hits()
 
             # ---- 1. 主画面渲染 ----
             calibrator.draw_virtual_court(frame)
@@ -953,6 +1080,8 @@ def overlay_tracking_queue_based(video_path, model_ball_path):
         elif key == ord('c') or key == ord('C'): 
             global_bounces.clear()
             global_hits.clear()
+            global_raw_bounces.clear()
+            processed_bottom_hit_frames.clear()
 
     # ⚡ 释放录制资源
     cap.release()

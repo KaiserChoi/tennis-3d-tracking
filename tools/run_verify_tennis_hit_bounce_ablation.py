@@ -377,10 +377,20 @@ def _hit_event(
     ball_px: float,
     ball_py: float,
     distance_px: float,
+    calibrator: CourtCalibrator,
     angle: float | None = None,
     threshold_px: float | None = None,
     crossing_frame: int | None = None,
 ) -> dict[str, Any]:
+    ball_real = calibrator.pixel_to_real(ball_px, ball_py)
+    if ball_real:
+        ball_rx, ball_ry = float(ball_real[0]), float(ball_real[1])
+    else:
+        ball_rx, ball_ry = float(player["rx"]), float(player["ry"])
+    player_rx = float(player["rx"])
+    player_ry = float(player["ry"])
+    hit_rx = ball_rx
+    hit_ry = player_ry
     return {
         "frame_index": int(frame),
         "source": source,
@@ -388,10 +398,15 @@ def _hit_event(
         "pixel_y": float(player["cy"]),
         "ball_pixel_x": float(ball_px),
         "ball_pixel_y": float(ball_py),
-        "x": float(player["rx"]),
-        "y": float(player["ry"]),
-        "world_x": float(player["rx"]),
-        "world_y": float(player["ry"]),
+        "x": hit_rx,
+        "y": hit_ry,
+        "world_x": hit_rx,
+        "world_y": hit_ry,
+        "ball_world_x": ball_rx,
+        "ball_world_y": ball_ry,
+        "player_world_x": player_rx,
+        "player_world_y": player_ry,
+        "coordinate_mode": "ball_x_player_y",
         "player_id": int(player.get("id", -1)),
         "distance_px": float(distance_px),
         "angle": None if angle is None else float(angle),
@@ -400,11 +415,20 @@ def _hit_event(
     }
 
 
-def _find_top_hit_candidate(
+def _bottom_hit_distance_threshold(player: dict[str, Any], distance_mode: str) -> float:
+    if distance_mode == "fixed_base":
+        return float(Config.HIT_DIST_PX_BASE)
+    ry_ratio = min(max(float(player["ry"]), 0.0), COURT_Y_MAX) / COURT_Y_MAX
+    return float(Config.HIT_DIST_PX_NET + (Config.HIT_DIST_PX_BASE - Config.HIT_DIST_PX_NET) * ry_ratio)
+
+
+def _find_lookback_hit_candidate(
     *,
     crossing_frame: int,
     ball_history: dict[int, tuple[float, float]],
     player_history: dict[int, list[dict[str, Any]]],
+    half: str,
+    distance_mode: str = "dynamic",
 ) -> dict[str, Any] | None:
     best: dict[str, Any] | None = None
     search_end = max(0, crossing_frame - Config.TOP_HIT_LOOKBACK_FRAMES)
@@ -415,8 +439,15 @@ def _find_top_hit_candidate(
         for player in player_history[frame]:
             if abs(float(player["rx"])) > SINGLES_X_MAX + Config.ROI_SIDE_MARGIN:
                 continue
-            if float(player["ry"]) >= 0:
+            if half == "top" and float(player["ry"]) >= 0:
                 continue
+            if half == "bottom" and float(player["ry"]) <= 0:
+                continue
+            threshold_px = (
+                float(Config.HIT_DIST_PX_TOP_MAX)
+                if half == "top"
+                else _bottom_hit_distance_threshold(player, distance_mode)
+            )
             dist = math.hypot(float(bx) - float(player["cx"]), float(by) - float(player["cy"]))
             if best is None or dist < float(best["distance_px"]):
                 best = {
@@ -426,9 +457,39 @@ def _find_top_hit_candidate(
                     "ball_pixel_y": float(by),
                     "player": player,
                     "distance_px": float(dist),
-                    "threshold_px": float(Config.HIT_DIST_PX_TOP_MAX),
+                    "threshold_px": float(threshold_px),
                 }
     return best
+
+
+def _find_top_hit_candidate(
+    *,
+    crossing_frame: int,
+    ball_history: dict[int, tuple[float, float]],
+    player_history: dict[int, list[dict[str, Any]]],
+) -> dict[str, Any] | None:
+    return _find_lookback_hit_candidate(
+        crossing_frame=crossing_frame,
+        ball_history=ball_history,
+        player_history=player_history,
+        half="top",
+    )
+
+
+def _find_bottom_lookback_hit_candidate(
+    *,
+    crossing_frame: int,
+    ball_history: dict[int, tuple[float, float]],
+    player_history: dict[int, list[dict[str, Any]]],
+    distance_mode: str,
+) -> dict[str, Any] | None:
+    return _find_lookback_hit_candidate(
+        crossing_frame=crossing_frame,
+        ball_history=ball_history,
+        player_history=player_history,
+        half="bottom",
+        distance_mode=distance_mode,
+    )
 
 
 def _find_bottom_hit_candidate(
@@ -455,8 +516,7 @@ def _find_bottom_hit_candidate(
             if distance_mode == "fixed_base":
                 dynamic_dist_thr = float(Config.HIT_DIST_PX_BASE)
             else:
-                ry_ratio = min(max(float(player["ry"]), 0.0), COURT_Y_MAX) / COURT_Y_MAX
-                dynamic_dist_thr = Config.HIT_DIST_PX_NET + (Config.HIT_DIST_PX_BASE - Config.HIT_DIST_PX_NET) * ry_ratio
+                dynamic_dist_thr = _bottom_hit_distance_threshold(player, distance_mode)
             dist = math.hypot(float(bx) - float(player["cx"]), float(by) - float(player["cy"]))
             candidate = {
                 "frame_index": int(bounce_frame),
@@ -489,6 +549,14 @@ def _suppress_near_hit(
             suppressed_bounces.append(suppressed)
 
 
+def _has_bottom_hit_near_crossing(hits: dict[int, dict[str, Any]], crossing_frame: int) -> bool:
+    start = crossing_frame - Config.TOP_HIT_LOOKBACK_FRAMES
+    for hit_frame, hit in hits.items():
+        if start <= int(hit_frame) <= crossing_frame and str(hit.get("source", "")).startswith("bottom"):
+            return True
+    return False
+
+
 def _maybe_add_final_bounce(
     *,
     event: dict[str, Any],
@@ -511,6 +579,34 @@ def _maybe_add_final_bounce(
     return cleaned
 
 
+def _build_final_bounces_after_hits(
+    *,
+    raw_bounce_candidates: dict[int, dict[str, Any]],
+    hits: dict[int, dict[str, Any]],
+    suppress_hit_window: bool,
+) -> tuple[dict[int, dict[str, Any]], list[dict[str, Any]], int]:
+    final_bounces: dict[int, dict[str, Any]] = {}
+    suppressed_bounces: list[dict[str, Any]] = []
+    cleaned_duplicate_bounces = 0
+    for frame in sorted(raw_bounce_candidates):
+        event = raw_bounce_candidates[frame]
+        suppressing_hit_frame = None
+        if suppress_hit_window:
+            for hit_frame in sorted(hits):
+                if abs(int(frame) - int(hit_frame)) <= HIT_SUPPRESS_RADIUS_FRAMES:
+                    suppressing_hit_frame = int(hit_frame)
+                    break
+        if suppressing_hit_frame is not None:
+            suppressed = dict(event)
+            suppressed["suppressed_by_hit_frame"] = suppressing_hit_frame
+            suppressed["suppression_reason"] = "hit_first_window"
+            suppressed_bounces.append(suppressed)
+            continue
+        cleaned_duplicate_bounces += _dedupe_event(final_bounces, int(frame), event)
+        final_bounces[int(frame)] = event
+    return final_bounces, suppressed_bounces, cleaned_duplicate_bounces
+
+
 def _run_variant(
     *,
     spec: VariantSpec,
@@ -528,6 +624,7 @@ def _run_variant(
 
     per_frame: dict[int, dict[str, Any]] = {}
     ball_history: dict[int, tuple[float, float]] = {}
+    all_ball_history: dict[int, tuple[float, float]] = {}
     raw_bounce_candidates: dict[int, dict[str, Any]] = {}
     final_bounces: dict[int, dict[str, Any]] = {}
     hits: dict[int, dict[str, Any]] = {}
@@ -560,7 +657,9 @@ def _run_variant(
             if not q["is_static"]:
                 for item in q["history"]:
                     f_idx, det, _is_stitched = item
-                    ball_history[int(f_idx)] = (float(det[0]), float(det[1]))
+                    ball_xy = (float(det[0]), float(det[1]))
+                    ball_history[int(f_idx)] = ball_xy
+                    all_ball_history[int(f_idx)] = ball_xy
         old_key = frame_index - 150
         ball_history.pop(old_key, None)
 
@@ -601,44 +700,6 @@ def _run_variant(
             if c_frame == frame_index:
                 per_frame[frame_index]["crossings"].append(crossing_event)
 
-            if direction != "top_down" or not spec.enable_top_hit:
-                continue
-            candidate = _find_top_hit_candidate(
-                crossing_frame=c_frame,
-                ball_history=ball_history,
-                player_history=detection.player_history,
-            )
-            if candidate is None:
-                continue
-            top_hit_candidates.append({
-                "frame_index": candidate["frame_index"],
-                "crossing_frame": candidate["crossing_frame"],
-                "distance_px": candidate["distance_px"],
-                "threshold_px": candidate["threshold_px"],
-                "accepted": bool((not spec.top_distance_gate) or candidate["distance_px"] < Config.HIT_DIST_PX_TOP_MAX),
-            })
-            if spec.top_distance_gate and candidate["distance_px"] >= Config.HIT_DIST_PX_TOP_MAX:
-                continue
-            hit = _hit_event(
-                frame=int(candidate["frame_index"]),
-                source="top_down_lookback",
-                player=candidate["player"],
-                ball_px=float(candidate["ball_pixel_x"]),
-                ball_py=float(candidate["ball_pixel_y"]),
-                distance_px=float(candidate["distance_px"]),
-                threshold_px=None if not spec.top_distance_gate else float(Config.HIT_DIST_PX_TOP_MAX),
-                crossing_frame=c_frame,
-            )
-            cleaned_duplicate_hits += _dedupe_event(hits, int(hit["frame_index"]), hit)
-            hits[int(hit["frame_index"])] = hit
-            if spec.suppress_hit_window:
-                _suppress_near_hit(
-                    final_bounces=final_bounces,
-                    hit_frame=int(hit["frame_index"]),
-                    suppressed_bounces=suppressed_bounces,
-                    reason="top_hit_window",
-                )
-
         for b_frame, bx, by, angle in frame_bounces:
             b_frame = int(b_frame)
             if b_frame in processed_bounce_frames:
@@ -649,71 +710,136 @@ def _run_variant(
                 continue
             raw_bounce_candidates[b_frame] = event
 
-            is_hit = False
-            hit_event: dict[str, Any] | None = None
+        if progress_every > 0 and seq % progress_every == 0:
+            print(
+                f"{spec.variant} {seq}/{len(detection.image_paths)} frames "
+                f"raw_bounce={len(raw_bounce_candidates)} crossings={len(crossings)}",
+                flush=True,
+            )
+
+    for crossing in crossings:
+        c_frame = int(crossing["frame_index"])
+        direction = str(crossing["direction"])
+        if direction == "top_down" and spec.enable_top_hit:
+            candidate = _find_top_hit_candidate(
+                crossing_frame=c_frame,
+                ball_history=all_ball_history,
+                player_history=detection.player_history,
+            )
+            if candidate is not None:
+                accepted = bool((not spec.top_distance_gate) or candidate["distance_px"] < candidate["threshold_px"])
+                top_hit_candidates.append({
+                    "frame_index": candidate["frame_index"],
+                    "crossing_frame": candidate["crossing_frame"],
+                    "distance_px": candidate["distance_px"],
+                    "threshold_px": candidate["threshold_px"],
+                    "accepted": accepted,
+                    "source": "top_down_lookback",
+                })
+                if accepted:
+                    hit = _hit_event(
+                        frame=int(candidate["frame_index"]),
+                        source="top_down_lookback",
+                        player=candidate["player"],
+                        ball_px=float(candidate["ball_pixel_x"]),
+                        ball_py=float(candidate["ball_pixel_y"]),
+                        distance_px=float(candidate["distance_px"]),
+                        calibrator=calibrator,
+                        threshold_px=None if not spec.top_distance_gate else float(candidate["threshold_px"]),
+                        crossing_frame=c_frame,
+                    )
+                    cleaned_duplicate_hits += _dedupe_event(hits, int(hit["frame_index"]), hit)
+                    hits[int(hit["frame_index"])] = hit
+
+    if spec.enable_bottom_hit:
+        for b_frame in sorted(raw_bounce_candidates):
+            event = raw_bounce_candidates[b_frame]
             bottom_candidate = _find_bottom_hit_candidate(
-                bounce_frame=b_frame,
-                bx=float(bx),
-                by=float(by),
-                angle=float(angle),
+                bounce_frame=int(b_frame),
+                bx=float(event["pixel_x"]),
+                by=float(event["pixel_y"]),
+                angle=float(event["angle"]),
                 ry=float(event["y"]),
                 player_history=detection.player_history,
                 distance_mode=spec.bottom_distance_mode,
             )
-            if bottom_candidate is not None:
-                accepted = spec.enable_bottom_hit and bottom_candidate["distance_px"] <= bottom_candidate["threshold_px"]
-                bottom_hit_candidates.append({
-                    "frame_index": b_frame,
-                    "player_frame": bottom_candidate["player_frame"],
-                    "angle": bottom_candidate["angle"],
-                    "distance_px": bottom_candidate["distance_px"],
-                    "threshold_px": bottom_candidate["threshold_px"],
-                    "accepted": bool(accepted),
-                })
-                if accepted:
-                    is_hit = True
-                    hit_event = _hit_event(
-                        frame=b_frame,
-                        source="bottom_reversal_player_anchor",
-                        player=bottom_candidate["player"],
-                        ball_px=float(bx),
-                        ball_py=float(by),
-                        distance_px=float(bottom_candidate["distance_px"]),
-                        angle=float(angle),
-                        threshold_px=float(bottom_candidate["threshold_px"]),
-                    )
-
-            if is_hit and hit_event is not None:
-                cleaned_duplicate_hits += _dedupe_event(hits, b_frame, hit_event)
-                hits[b_frame] = hit_event
-                if spec.suppress_hit_window:
-                    _suppress_near_hit(
-                        final_bounces=final_bounces,
-                        hit_frame=b_frame,
-                        suppressed_bounces=suppressed_bounces,
-                        reason="bottom_hit_window",
-                    )
+            if bottom_candidate is None:
                 continue
+            accepted = bottom_candidate["distance_px"] <= bottom_candidate["threshold_px"]
+            bottom_hit_candidates.append({
+                "frame_index": int(b_frame),
+                "player_frame": bottom_candidate["player_frame"],
+                "angle": bottom_candidate["angle"],
+                "distance_px": bottom_candidate["distance_px"],
+                "threshold_px": bottom_candidate["threshold_px"],
+                "accepted": bool(accepted),
+                "source": "bottom_reversal_player_anchor",
+            })
+            if accepted:
+                hit = _hit_event(
+                    frame=int(b_frame),
+                    source="bottom_reversal_player_anchor",
+                    player=bottom_candidate["player"],
+                    ball_px=float(event["pixel_x"]),
+                    ball_py=float(event["pixel_y"]),
+                    distance_px=float(bottom_candidate["distance_px"]),
+                    calibrator=calibrator,
+                    angle=float(event["angle"]),
+                    threshold_px=float(bottom_candidate["threshold_px"]),
+                )
+                cleaned_duplicate_hits += _dedupe_event(hits, int(b_frame), hit)
+                hits[int(b_frame)] = hit
 
-            cleaned_duplicate_bounces += _maybe_add_final_bounce(
-                event=event,
-                final_bounces=final_bounces,
-                hits=hits,
-                suppressed_bounces=suppressed_bounces,
-                suppress_hit_window=spec.suppress_hit_window,
+        for crossing in crossings:
+            if str(crossing["direction"]) != "bottom_up":
+                continue
+            c_frame = int(crossing["frame_index"])
+            if _has_bottom_hit_near_crossing(hits, c_frame):
+                continue
+            candidate = _find_bottom_lookback_hit_candidate(
+                crossing_frame=c_frame,
+                ball_history=all_ball_history,
+                player_history=detection.player_history,
+                distance_mode=spec.bottom_distance_mode,
             )
+            if candidate is None:
+                continue
+            accepted = candidate["distance_px"] <= candidate["threshold_px"]
+            bottom_hit_candidates.append({
+                "frame_index": candidate["frame_index"],
+                "crossing_frame": candidate["crossing_frame"],
+                "distance_px": candidate["distance_px"],
+                "threshold_px": candidate["threshold_px"],
+                "accepted": bool(accepted),
+                "source": "bottom_up_lookback",
+            })
+            if accepted:
+                hit = _hit_event(
+                    frame=int(candidate["frame_index"]),
+                    source="bottom_up_lookback",
+                    player=candidate["player"],
+                    ball_px=float(candidate["ball_pixel_x"]),
+                    ball_py=float(candidate["ball_pixel_y"]),
+                    distance_px=float(candidate["distance_px"]),
+                    calibrator=calibrator,
+                    threshold_px=float(candidate["threshold_px"]),
+                    crossing_frame=c_frame,
+                )
+                cleaned_duplicate_hits += _dedupe_event(hits, int(hit["frame_index"]), hit)
+                hits[int(hit["frame_index"])] = hit
 
-        if progress_every > 0 and seq % progress_every == 0:
-            print(
-                f"{spec.variant} {seq}/{len(detection.image_paths)} frames "
-                f"raw_bounce={len(raw_bounce_candidates)} hits={len(hits)} final_bounce={len(final_bounces)}",
-                flush=True,
-            )
+    final_bounces, suppressed_bounces, cleaned_duplicate_bounces = _build_final_bounces_after_hits(
+        raw_bounce_candidates=raw_bounce_candidates,
+        hits=hits,
+        suppress_hit_window=spec.suppress_hit_window,
+    )
 
     top_down_crossings = [c for c in crossings if c["direction"] == "top_down"]
+    bottom_up_crossings = [c for c in crossings if c["direction"] == "bottom_up"]
     bottom_reversal_candidates = [b for b in raw_bounce_candidates.values() if float(b["y"]) > 0]
     accepted_top_hits = [h for h in hits.values() if h["source"] == "top_down_lookback"]
     accepted_bottom_hits = [h for h in hits.values() if h["source"] == "bottom_reversal_player_anchor"]
+    accepted_bottom_lookback_hits = [h for h in hits.values() if h["source"] == "bottom_up_lookback"]
     in_count = sum(1 for b in final_bounces.values() if bool(b.get("in_court", False)))
     out_count = len(final_bounces) - in_count
     stats = {
@@ -732,15 +858,21 @@ def _run_variant(
         "static_zone_enabled": bool(spec.static_zone),
         "net_crossings": len(crossings),
         "top_down_crossings": len(top_down_crossings),
+        "bottom_up_crossings": len(bottom_up_crossings),
         "top_hit_candidates": len(top_hit_candidates),
         "top_hits": len(accepted_top_hits),
+        "top_down_lookback_hits": len(accepted_top_hits),
         "bottom_reversal_candidates": len(bottom_reversal_candidates),
         "bottom_hit_candidates": len(bottom_hit_candidates),
         "bottom_hits": len(accepted_bottom_hits),
+        "bottom_direct_hits": len(accepted_bottom_hits),
+        "bottom_up_lookback_hits": len(accepted_bottom_lookback_hits),
         "raw_bounce_candidates": len(raw_bounce_candidates),
         "suppressed_bounces_by_hit_window": len(suppressed_bounces),
         "cleaned_duplicate_bounces": int(cleaned_duplicate_bounces),
+        "deduped_bounces_after_hit": int(cleaned_duplicate_bounces),
         "cleaned_duplicate_hits": int(cleaned_duplicate_hits),
+        "hit_first_bounce_cleaning": True,
         "final_bounce_count": len(final_bounces),
         "in_count": int(in_count),
         "out_count": int(out_count),
