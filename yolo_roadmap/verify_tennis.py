@@ -32,6 +32,7 @@ class Config:
     DISPLAY_HEIGHT = 768     
     MINIMAP_RATIO = 0.3      
     MINIMAP_MARGIN = 6.0     
+    DRAW_MAIN_COURT_LINES = False
 
     # ---------------------------------------------------------
     # 4. 追踪与死球黑洞控制
@@ -1045,7 +1046,8 @@ def overlay_tracking_queue_based(video_path, model_ball_path):
             global_bounces = _rebuild_final_bounces_after_hits()
 
             # ---- 1. 主画面渲染 ----
-            calibrator.draw_virtual_court(frame)
+            if Config.DRAW_MAIN_COURT_LINES:
+                calibrator.draw_virtual_court(frame)
             
             for px1, py1, px2, py2, p_id in person_boxes:
                 cv2.rectangle(frame, (px1, py1), (px2, py2), Config.C_PERSON_BOX, 2)
